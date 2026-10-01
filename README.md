@@ -108,6 +108,26 @@ After an install the tool checks that each device reports the APK's `versionCode
 handled one at a time; an unreachable device is reported and the rest still run, and the
 command exits non-zero if any device failed.
 
+## Web UI
+
+```sh
+shield-manager web            # then open http://127.0.0.1:8765/
+```
+
+The **Apps** tab is an app-store-style screen listing every app on any of your Shields, with
+its name and icon (read from the Shield), search, and filters for apps that are missing or
+out of date somewhere. Tap an app to install or update it on a Shield; it's copied from a
+Shield that already has the newest version. A banner offers **Sync now** when Shields have
+fallen behind the reference. Sync never removes apps. The **Shields** tab adds, groups and
+removes Shields, picks the reference, and installs an APK file you upload.
+
+Installs run in the background, so closing the page doesn't stop them. App names and icons
+are cached in `~/.config/shield-manager/app-cache/`.
+
+The page uses only relative URLs, so it works behind a path prefix such as Home Assistant's
+ingress. It listens on localhost by default and has no login: `--host 0.0.0.0` exposes it to
+your network, and `--allow-from IP` limits it to one client, such as a reverse proxy.
+
 The device list and the ADB key live in `~/.config/shield-manager/` (override with
 `SHIELD_MANAGER_HOME`).
 

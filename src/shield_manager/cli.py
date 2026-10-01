@@ -111,7 +111,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_args(fleet_sync)
 
+    web = sub.add_parser("web", help="serve the web UI")
+    web.add_argument("--host", default="127.0.0.1", help="address to bind (default: localhost)")
+    web.add_argument("--port", type=int, default=8765)
+    web.add_argument(
+        "--allow-from",
+        action="append",
+        default=[],
+        metavar="IP",
+        help="only accept connections from this IP (repeatable), e.g. a reverse proxy",
+    )
+
     return parser
+
+
+def _serve_web(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager.web import create_server
+
+    server = create_server(
+        registry, args.host, args.port, verbose=True, allowed_clients=args.allow_from
+    )
+    host = f"[{args.host}]" if ":" in args.host else args.host
+    print(f"Shield Manager UI on http://{host}:{server.server_port}/ (Ctrl+C to stop)")
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.allow_from:
+        print("warning: anyone who can reach this address can install apps on your Shields")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
 
 
 def _device_info(device: Device) -> int:
@@ -314,6 +344,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_app(args, registry)
         elif args.command == "fleet":
             return _run_fleet(args, registry)
+        elif args.command == "web":
+            return _serve_web(args, registry)
     except DeviceExistsError as e:
         print(f"error: device '{e}' is already registered", file=sys.stderr)
         return 1
