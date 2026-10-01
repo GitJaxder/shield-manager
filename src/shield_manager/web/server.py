@@ -1,18 +1,16 @@
-"""A small local web UI over the shield-manager library.
+"""A small web UI over the shield-manager library.
 
-Uses only the standard library: a JSON API under /api/ and one static page. It binds to
-localhost by default because anyone who can reach it can install apps on your Shields.
+Uses only the standard library: a JSON API under api/ and one static page. Every URL the
+page uses is relative, so it also works behind a path prefix such as Home Assistant's
+ingress. It binds to localhost by default because anyone who can reach it can install
+apps on your Shields.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import tempfile
-from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from dataclasses import asdict
+from collections.abc import Iterable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -20,16 +18,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from shield_manager import deploy
-from shield_manager.apk import ApkError, read_apk_info
-from shield_manager.registry import (
-    DEFAULT_ADB_PORT,
-    Device,
-    DeviceExistsError,
-    DeviceNotFoundError,
-    Registry,
-)
-from shield_manager.web import drift
+from shield_manager.appinfo import IMAGE_TYPES
+from shield_manager.registry import Registry
+from shield_manager.web.api import Api, ApiError, Connector
 
 # Mutating requests must carry this header. Browsers won't send a custom header
 # cross-origin without a CORS preflight, which this server never approves, so other
@@ -37,153 +28,7 @@ from shield_manager.web import drift
 CSRF_HEADER = "X-Shield-Manager"
 CSP = "default-src 'self' 'unsafe-inline'; img-src 'self' data:"
 MAX_APK_BYTES = 4 * 1024**3
-DEVICE_NAME = re.compile(r"^[\w.-]+$")
-
-Connector = Callable[[Device], Any]
-
-
-class ApiError(Exception):
-    def __init__(self, status: HTTPStatus, message: str) -> None:
-        super().__init__(message)
-        self.status = status
-
-
-def _default_connect(device: Device):
-    # Imported lazily so the server starts without loading the ADB stack.
-    from shield_manager import adb
-
-    return adb.connect(device)
-
-
-class Api:
-    """The UI's operations, independent of HTTP so they're easy to test."""
-
-    def __init__(self, registry: Registry, connect: Connector | None = None) -> None:
-        self.registry = registry
-        self.connect = connect or _default_connect
-
-    def _on_device(self, device: Device, action: Callable[[Any], Any]) -> dict:
-        try:
-            conn = self.connect(device)
-            try:
-                return {"device": device.name, "ok": True, "result": action(conn)}
-            finally:
-                conn.close()
-        except Exception as e:  # report per device so one bad Shield doesn't hide the rest
-            return {"device": device.name, "ok": False, "error": str(e) or type(e).__name__}
-
-    def _on_devices(self, devices: list[Device], action: Callable[[Any], Any]) -> list[dict]:
-        if not devices:
-            return []
-        with ThreadPoolExecutor(max_workers=min(8, len(devices))) as pool:
-            return list(pool.map(lambda d: self._on_device(d, action), devices))
-
-    def _resolve(self, names: list[str] | None) -> list[Device]:
-        if not names:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "pick at least one device")
-        try:
-            return self.registry.resolve(names)
-        except DeviceNotFoundError as e:
-            raise ApiError(HTTPStatus.NOT_FOUND, f"no device named '{e}'") from e
-
-    def _get(self, name: str) -> Device:
-        try:
-            return self.registry.get(name)
-        except DeviceNotFoundError as e:
-            raise ApiError(HTTPStatus.NOT_FOUND, f"no device named '{e}'") from e
-
-    def list_devices(self) -> list[dict]:
-        return [{**asdict(d), "address": d.address} for d in self.registry.list()]
-
-    def add_device(self, body: dict) -> dict:
-        name = str(body.get("name", "")).strip()
-        host = str(body.get("host", "")).strip()
-        if not DEVICE_NAME.match(name):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "name may use letters, digits, '.', '_', '-'")
-        if not host:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "host is required")
-        try:
-            port = int(body.get("port") or DEFAULT_ADB_PORT)
-        except (TypeError, ValueError) as e:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "port must be a number") from e
-        groups = tuple(str(g).strip() for g in body.get("groups", []) if str(g).strip())
-        device = Device(name, host, port, groups)
-        try:
-            self.registry.add(device)
-        except DeviceExistsError as e:
-            raise ApiError(HTTPStatus.CONFLICT, f"device '{e}' is already registered") from e
-        return {**asdict(device), "address": device.address}
-
-    def remove_device(self, name: str) -> dict:
-        self._get(name)
-        self.registry.remove(name)
-        return {"removed": name}
-
-    def set_groups(self, name: str, body: dict) -> dict:
-        self._get(name)
-        groups = [str(g).strip() for g in body.get("groups", []) if str(g).strip()]
-        d = self.registry.set_groups(name, groups)
-        return {**asdict(d), "address": d.address}
-
-    def device_info(self, name: str) -> dict:
-        from shield_manager import adb
-
-        return self._on_device(self._get(name), adb.get_props)
-
-    def device_apps(self, name: str) -> dict:
-        def action(conn):
-            apps = drift.installed_apps(conn)
-            return [{"package": p, "version_code": c} for p, c in sorted(apps.items())]
-
-        return self._on_device(self._get(name), action)
-
-    def drift(self, reference: str) -> dict:
-        ref = self._get(reference)
-        devices = self.registry.list()
-        inventories = {r["device"]: r for r in self._on_devices(devices, drift.installed_apps)}
-        ref_result = inventories[ref.name]
-        if not ref_result["ok"]:
-            raise ApiError(
-                HTTPStatus.BAD_GATEWAY, f"couldn't read {ref.name}: {ref_result['error']}"
-            )
-        ref_apps = ref_result["result"]
-        report = []
-        for d in devices:
-            if d.name == ref.name:
-                continue
-            r = inventories[d.name]
-            if r["ok"]:
-                entry = drift.compare(d.name, ref_apps, r["result"])
-            else:
-                entry = drift.DeviceDrift(d.name, error=r["error"])
-            report.append({**asdict(entry), "in_sync": entry.in_sync})
-        apps = [{"package": p, "version_code": c} for p, c in sorted(ref_apps.items())]
-        return {"reference": ref.name, "reference_apps": apps, "devices": report}
-
-    def install(self, apk_path: Path, names: list[str], allow_downgrade: bool) -> dict:
-        devices = self._resolve(names)
-        try:
-            info = read_apk_info(apk_path)
-        except ApkError as e:
-            raise ApiError(HTTPStatus.BAD_REQUEST, str(e)) from e
-
-        def action(conn):
-            v = deploy.install(conn, apk_path, info, allow_downgrade=allow_downgrade)
-            return asdict(v)
-
-        return {"apk": asdict(info), "results": self._on_devices(devices, action)}
-
-    def uninstall(self, body: dict) -> dict:
-        package = str(body.get("package", "")).strip()
-        if not package:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "package is required")
-        devices = self._resolve(body.get("devices"))
-
-        def action(conn):
-            deploy.uninstall(conn, package)
-            return {"removed": package}
-
-        return {"package": package, "results": self._on_devices(devices, action)}
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -209,6 +54,9 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         url = urlsplit(self.path)
         try:
+            allowed = self.server.allowed_clients
+            if allowed and self.client_address[0] not in allowed:
+                raise ApiError(HTTPStatus.FORBIDDEN, "client not allowed")
             if not self._host_allowed():
                 raise ApiError(HTTPStatus.FORBIDDEN, "unexpected Host header")
             if method == "GET" and url.path in ("/", "/index.html"):
@@ -217,8 +65,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, "not found")
             if method != "GET" and self.headers.get(CSRF_HEADER) != "1":
                 raise ApiError(HTTPStatus.FORBIDDEN, f"missing {CSRF_HEADER} header")
-            payload = self._route(method, url.path[len("/api/") :], parse_qs(url.query))
-            self._send_json(HTTPStatus.OK, payload)
+            path = url.path[len("/api/") :]
+            if method == "GET" and path.startswith("images/"):
+                return self._send_image(unquote(path[len("images/") :]))
+            self._send_json(HTTPStatus.OK, self._route(method, path, parse_qs(url.query)))
         except ApiError as e:
             self._send_json(e.status, {"error": str(e)})
         except Exception as e:  # keep the server up and tell the page what broke
@@ -229,7 +79,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.loopback_only:
             return True
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
-        return host in ("localhost", "127.0.0.1", "::1")
+        return host in LOOPBACK
 
     def _route(self, method: str, path: str, query: dict[str, list[str]]) -> Any:
         api = self.server.api
@@ -245,20 +95,26 @@ class Handler(BaseHTTPRequestHandler):
                 return api.set_groups(name, self._json_body())
             case "GET", ["devices", name, "info"]:
                 return api.device_info(name)
-            case "GET", ["devices", name, "apps"]:
-                return api.device_apps(name)
-            case "GET", ["drift"]:
-                reference = (query.get("reference") or [""])[0]
-                if not reference:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "reference is required")
-                return api.drift(reference)
+            case "PUT", ["reference"]:
+                return api.set_reference(self._json_body())
+            case "GET", ["catalog"]:
+                return api.catalog()
+            case "GET", ["catalog", "meta"]:
+                return api.meta_index()
+            case "POST", ["install-from-shield"]:
+                return api.install_from_shield(self._json_body())
             case "POST", ["install"]:
                 names = [n for v in query.get("devices", []) for n in v.split(",") if n]
                 allow_downgrade = (query.get("allow_downgrade") or ["0"])[0] == "1"
-                with self._uploaded_apk() as apk:
-                    return api.install(apk, names, allow_downgrade)
+                return api.install_upload(self._receive_apk(), names, allow_downgrade)
+            case "POST", ["sync"]:
+                return api.sync(self._json_body())
             case "POST", ["uninstall"]:
                 return api.uninstall(self._json_body())
+            case "GET", ["jobs"]:
+                return api.list_jobs()
+            case "GET", ["jobs", job_id]:
+                return api.job(job_id)
         raise ApiError(HTTPStatus.NOT_FOUND, "not found")
 
     def _content_length(self) -> int:
@@ -279,41 +135,54 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "body must be a JSON object")
         return body
 
-    @contextmanager
-    def _uploaded_apk(self) -> Iterator[Path]:
-        """Stream the raw request body (the APK file) to a temporary file."""
+    def _receive_apk(self) -> Path:
+        """Stream the raw request body (the APK file) into a new temporary directory."""
         length = self._content_length()
         if length <= 0:
             raise ApiError(HTTPStatus.BAD_REQUEST, "send the APK as the request body")
         if length > MAX_APK_BYTES:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "APK too large")
-        with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
-            path = Path(tmp) / "upload.apk"
-            with path.open("wb") as f:
-                remaining = length
-                while remaining:
-                    chunk = self.rfile.read(min(remaining, 1024**2))
-                    if not chunk:
-                        raise ApiError(HTTPStatus.BAD_REQUEST, "upload ended early")
-                    f.write(chunk)
-                    remaining -= len(chunk)
-            yield path
+        path = Path(tempfile.mkdtemp(prefix="shield-manager-")) / "upload.apk"
+        with path.open("wb") as f:
+            remaining = length
+            while remaining:
+                chunk = self.rfile.read(min(remaining, 1024**2))
+                if not chunk:
+                    break
+                f.write(chunk)
+                remaining -= len(chunk)
+        if remaining:
+            path.unlink()
+            path.parent.rmdir()
+            raise ApiError(HTTPStatus.BAD_REQUEST, "upload ended early")
+        return path
 
     def _send_static(self) -> None:
         page = resources.files("shield_manager.web").joinpath("static/index.html").read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(page)))
-        self.send_header("Content-Security-Policy", CSP)
-        self.end_headers()
-        self.wfile.write(page)
+        self._send_bytes(page, "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
+
+    def _send_image(self, name: str) -> None:
+        path = self.server.api.image(name)
+        content_type = IMAGE_TYPES.get(path.suffix, "image/png")
+        self._send_bytes(path.read_bytes(), content_type, cache=True)
 
     def _send_json(self, status: HTTPStatus, payload: Any) -> None:
-        body = json.dumps(payload).encode()
+        self._send_bytes(json.dumps(payload).encode(), "application/json", status=status)
+
+    def _send_bytes(
+        self,
+        body: bytes,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+        cache: bool = False,
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -321,11 +190,18 @@ class Handler(BaseHTTPRequestHandler):
 class UiServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], api: Api, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        api: Api,
+        verbose: bool = False,
+        allowed_clients: Iterable[str] = (),
+    ) -> None:
         super().__init__(address, Handler)
         self.api = api
         self.verbose = verbose
-        self.loopback_only = address[0] in ("127.0.0.1", "localhost", "::1")
+        self.loopback_only = address[0] in LOOPBACK
+        self.allowed_clients = frozenset(allowed_clients)
 
 
 def create_server(
@@ -334,5 +210,9 @@ def create_server(
     port: int = 8765,
     connect: Connector | None = None,
     verbose: bool = False,
+    allowed_clients: Iterable[str] = (),
+    cache_dir: Path | None = None,
 ) -> UiServer:
-    return UiServer((host, port), Api(registry, connect), verbose=verbose)
+    """Build the UI server. allowed_clients, if given, limits which IPs may connect."""
+    api = Api(registry, connect, cache_dir)
+    return UiServer((host, port), api, verbose=verbose, allowed_clients=allowed_clients)

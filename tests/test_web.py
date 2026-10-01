@@ -1,56 +1,45 @@
 import http.client
 import json
 import threading
+import time
 import zipfile
 
 import pytest
 
+from shield_manager import appinfo
 from shield_manager.registry import Device, Registry
-from shield_manager.web import drift
 from shield_manager.web.server import create_server
 from tests.axml import build_manifest
 from tests.fakes import FakeConnection
 from tests.test_apk import ATTRS, STRINGS
 
 
-def versions(apps):
-    return "\n".join(f"package:{p} versionCode:{c}" for p, c in apps.items())
-
-
-def test_installed_apps_parses_version_codes():
-    conn = FakeConnection(
-        responses={"pm list packages -3": "package:a.b versionCode:12\npackage:c.d\njunk\n"}
-    )
-    assert drift.installed_apps(conn) == {"a.b": 12, "c.d": 0}
-
-
-def test_compare():
-    ref = {"kodi": 20, "plex": 5, "yt": 3}
-    got = drift.compare("den", ref, {"kodi": 19, "yt": 4, "game": 1})
-    assert [a.package for a in got.missing] == ["plex"]
-    assert [(a.package, a.version_code) for a in got.outdated] == [("kodi", 19)]
-    assert [a.package for a in got.newer] == ["yt"]
-    assert [a.package for a in got.extra] == ["game"]
-    assert not got.in_sync
-    assert drift.compare("den", ref, {**ref, "game": 1}).in_sync  # extras don't count
-
-
 @pytest.fixture
-def ui(tmp_path):
+def ui(tmp_path, monkeypatch):
     registry = Registry(tmp_path / "devices.json")
     registry.add(Device("den", "10.0.0.2", groups=("upstairs",)))
     registry.add(Device("living", "10.0.0.3"))
-    conns = {
-        "den": FakeConnection(responses={"pm list packages": versions({"kodi": 20, "plex": 5})}),
-        "living": FakeConnection(responses={"pm list packages": versions({"kodi": 19})}),
+    registry.set_reference("den")
+    installed = {
+        "den": {"org.xbmc.kodi": (20, "20.0"), "com.plexapp.android": (5, "5")},
+        "living": {"org.xbmc.kodi": (19, "19.0"), "com.retroarch": (7, "1.7")},
     }
 
     def connect(device):
-        if device.name not in conns:
+        if device.name not in installed:
             raise ConnectionRefusedError("unreachable")
-        return conns[device.name]
+        conn = FakeConnection(installed=installed[device.name])
+        conn.installed = installed[device.name]  # share state across connections
+        return conn
 
-    server = create_server(registry, port=0, connect=connect)
+    def fake_meta(conn, package, version_code, cache_dir):
+        (cache_dir / f"{package}.icon.png").write_bytes(b"PNG")
+        return appinfo.AppMeta(
+            package, version_code, label=package.split(".")[1].title(), icon=f"{package}.icon.png"
+        )
+
+    monkeypatch.setattr(appinfo, "fetch_meta", fake_meta)
+    server = create_server(registry, port=0, connect=connect, cache_dir=tmp_path / "cache")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -65,16 +54,27 @@ def ui(tmp_path):
         ctype = res.getheader("Content-Type", "")
         return res.status, json.loads(data) if ctype.startswith("application/json") else data
 
-    request.registry, request.conns = registry, conns
+    def wait_job(job):
+        for _ in range(200):
+            status, job = request("GET", f"/api/jobs/{job['id']}")
+            if job["state"] != "running":
+                return job
+            time.sleep(0.02)
+        raise AssertionError("job didn't finish")
+
+    request.registry, request.installed, request.wait_job = registry, installed, wait_job
+    request.api = server.api
     yield request
     server.shutdown()
     server.server_close()
 
 
-def test_serves_page(ui):
+def test_serves_page_with_relative_urls(ui):
     status, page = ui("GET", "/")
     assert status == 200
     assert b"Shield Manager" in page
+    # Must work behind Home Assistant ingress's path prefix.
+    assert b'fetch("/api' not in page and b'src="/' not in page
 
 
 def test_device_crud(ui):
@@ -85,12 +85,26 @@ def test_device_crud(ui):
     status, d = ui("PUT", "/api/devices/attic/groups", {"groups": ["b", "a"]})
     assert d["groups"] == ["a", "b"]
     assert ui("DELETE", "/api/devices/attic")[0] == 200
-    assert [d["name"] for d in ui("GET", "/api/devices")[1]] == ["den", "living"]
     assert ui("DELETE", "/api/devices/attic")[0] == 404
 
 
+def test_set_reference(ui):
+    assert ui("PUT", "/api/reference", {"name": "living"})[0] == 200
+    assert ui.registry.reference == "living"
+    devices = ui("GET", "/api/devices")[1]
+    assert [d["name"] for d in devices if d["reference"]] == ["living"]
+
+
+def test_first_device_becomes_reference(tmp_path):
+    from shield_manager.web.api import Api
+
+    api = Api(Registry(tmp_path / "d.json"), connect=lambda d: None, cache_dir=tmp_path)
+    api.add_device({"name": "den", "host": "10.0.0.2"})
+    assert api.registry.reference == "den"
+
+
 def test_mutations_need_csrf_header(ui):
-    status, body = ui(
+    status, _ = ui(
         "POST", "/api/devices", {"name": "x", "host": "y"}, headers={"X-Shield-Manager": ""}
     )
     assert status == 403
@@ -101,36 +115,89 @@ def test_rejects_foreign_host_header(ui):
     assert ui("GET", "/api/devices", headers={"Host": "evil.example"})[0] == 403
 
 
-def test_drift(ui):
+def test_allowed_clients(tmp_path):
+    server = create_server(Registry(tmp_path / "d.json"), port=0, allowed_clients=["10.9.9.9"])
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        conn.request("GET", "/api/devices")
+        assert conn.getresponse().status == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_catalog_lists_every_app_with_versions_and_drift(ui):
     ui.registry.add(Device("attic", "10.0.0.9"))
-    status, report = ui("GET", "/api/drift?reference=den")
+    status, cat = ui("GET", "/api/catalog")
     assert status == 200
-    by_name = {d["device"]: d for d in report["devices"]}
-    assert by_name["living"]["missing"] == [{"package": "plex", "version_code": 5}]
-    assert by_name["living"]["outdated"] == [{"package": "kodi", "version_code": 19}]
-    assert not by_name["living"]["in_sync"]
-    assert by_name["attic"]["error"] == "unreachable"
-    assert all(c.closed for c in ui.conns.values())
+    apps = {a["package"]: a for a in cat["apps"]}
+    assert apps["org.xbmc.kodi"]["versions"] == {"den": 20, "living": 19}
+    assert apps["com.retroarch"]["reference_version"] is None
+    shields = {s["name"]: s for s in cat["shields"]}
+    assert shields["attic"]["ok"] is False
+    assert shields["living"]["drift"] == {"install": 1, "update": 1, "newer": 0, "extra": 1}
+    assert shields["den"]["reference"] is True
+
+    # Labels and icons load in the background, then show up in the catalog.
+    for _ in range(100):
+        meta = ui("GET", "/api/catalog/meta")[1]
+        if not meta["pending"] and len(meta["apps"]) == 3:
+            break
+        time.sleep(0.02)
+    assert meta["apps"]["org.xbmc.kodi"]["label"] == "Xbmc"
+    cat = ui("GET", "/api/catalog")[1]
+    kodi = next(a for a in cat["apps"] if a["package"] == "org.xbmc.kodi")
+    assert kodi["label"] == "Xbmc" and not cat["meta_pending"]
+    status, image = ui("GET", "/api/images/" + kodi["icon"])
+    assert status == 200 and image == b"PNG"
+    assert ui("GET", "/api/images/index.json")[0] == 404
 
 
-def test_drift_unreachable_reference(ui):
-    ui.registry.add(Device("attic", "10.0.0.9"))
-    status, body = ui("GET", "/api/drift?reference=attic")
-    assert status == 502 and "unreachable" in body["error"]
+def test_install_from_shield_copies_from_the_reference(ui):
+    status, job = ui(
+        "POST",
+        "/api/install-from-shield",
+        {"package": "com.plexapp.android", "devices": ["living"]},
+    )
+    assert status == 200
+    job = ui.wait_job(job)
+    assert job["state"] == "done", job
+    assert ui.installed["living"]["com.plexapp.android"][0] == 5
+
+
+def test_install_from_shield_uses_newest_copy(ui):
+    # retroarch only exists on living; installing it on den copies it from there.
+    job = ui.wait_job(
+        ui("POST", "/api/install-from-shield", {"package": "com.retroarch", "devices": ["den"]})[1]
+    )
+    assert job["state"] == "done", job
+    assert ui.installed["den"]["com.retroarch"][0] == 7
+
+
+def test_install_from_shield_rejects_bad_package(ui):
+    status, body = ui("POST", "/api/install-from-shield", {"package": "a;rm", "devices": ["den"]})
+    assert status == 400
+
+
+def test_sync_job(ui):
+    job = ui.wait_job(ui("POST", "/api/sync", {})[1])
+    assert job["state"] == "done", job
+    living = ui.installed["living"]
+    assert living["org.xbmc.kodi"][0] == 20 and living["com.plexapp.android"][0] == 5
+    assert "com.retroarch" in living  # sync never removes apps
 
 
 def test_install_upload(ui, tmp_path):
     apk = tmp_path / "app.apk"
     with zipfile.ZipFile(apk, "w") as zf:
         zf.writestr("AndroidManifest.xml", build_manifest(ATTRS, STRINGS))
-    for conn in ui.conns.values():
-        conn.responses["pm install"] = "Success"
-        conn.installed["com.example.tv"] = (42, "1.4.2")
-    status, body = ui("POST", "/api/install?devices=den,living", raw=apk.read_bytes())
-    assert status == 200
-    assert body["apk"]["package"] == "com.example.tv"
-    assert [r["ok"] for r in body["results"]] == [True, True]
-    assert ui.conns["den"].pushed[0][1] == "/data/local/tmp/com.example.tv.apk"
+    for name in ("den", "living"):
+        ui.installed[name]["com.example.tv"] = (42, "1.4.2")  # what the device reports after
+    status, job = ui("POST", "/api/install?devices=den,living", raw=apk.read_bytes())
+    assert status == 200 and job["apk"]["package"] == "com.example.tv"
+    job = ui.wait_job(job)
+    assert [r["ok"] for r in job["results"]] == [True, True], job
 
 
 def test_install_rejects_non_apk(ui):
@@ -139,9 +206,29 @@ def test_install_rejects_non_apk(ui):
 
 
 def test_uninstall_reports_per_device(ui):
-    ui.conns["den"].responses["pm uninstall"] = "Success"
-    ui.conns["living"].responses["pm uninstall"] = "Failure [DELETE_FAILED_INTERNAL_ERROR]"
-    status, body = ui("POST", "/api/uninstall", {"package": "kodi", "devices": ["den", "living"]})
+    status, body = ui(
+        "POST", "/api/uninstall", {"package": "com.plexapp.android", "devices": ["den", "living"]}
+    )
     assert status == 200
     assert [r["ok"] for r in body["results"]] == [True, False]
-    assert "DELETE_FAILED" in body["results"][1]["error"]
+    assert "com.plexapp.android" not in ui.installed["den"]
+
+
+def test_unreadable_app_details_are_retried_after_restart_not_every_load(ui, monkeypatch):
+    calls = []
+
+    def broken(conn, package, version_code, cache_dir):
+        calls.append(package)
+        raise RuntimeError("no unzip")
+
+    monkeypatch.setattr(appinfo, "fetch_meta", broken)
+    ui("GET", "/api/catalog")
+    for _ in range(100):
+        if not ui("GET", "/api/catalog/meta")[1]["pending"]:
+            break
+        time.sleep(0.02)
+    first = len(calls)
+    assert first == 3
+    assert ui("GET", "/api/catalog")[1]["meta_pending"] is False
+    assert len(calls) == first
+    assert ui.api.meta.load() == {}  # failures aren't written to disk

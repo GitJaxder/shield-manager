@@ -52,8 +52,8 @@ def fleet(registry, monkeypatch):
     registry.add(Device("den", "10.0.0.2", groups=("upstairs",)))
     registry.add(Device("garage", "10.0.0.4"))
     conns = {
-        "den": FakeConnection(responses={"pm uninstall": "Success"}),
-        "garage": FakeConnection(responses={"pm uninstall": "Success"}),
+        "den": FakeConnection(),
+        "garage": FakeConnection(),
     }
 
     def connect(device):
@@ -79,6 +79,7 @@ def test_app_requires_targets(registry, capsys):
 
 
 def test_app_uninstall_by_group(registry, fleet, capsys):
+    fleet["den"].installed["com.example.tv"] = (42, "")
     assert main(["app", "uninstall", "com.example.tv", "-g", "upstairs"], registry=registry) == 0
     assert fleet["den"].commands == ["pm uninstall com.example.tv"]
     assert fleet["garage"].commands == []
@@ -112,3 +113,52 @@ def test_one_unreachable_device_fails_without_stopping_others(registry, fleet, c
 def test_app_unknown_group(registry, capsys):
     assert main(["app", "list", "-g", "nope"], registry=registry) == 1
     assert "no devices in group 'nope'" in capsys.readouterr().err
+
+
+@pytest.fixture
+def mirrored(registry, fleet):
+    fleet["den"].installed.update({"kodi": (200, ""), "plex": (50, "")})
+    fleet["garage"].installed.update({"kodi": (190, ""), "old.game": (1, "")})
+    return fleet
+
+
+def test_fleet_needs_a_reference(registry, fleet, capsys):
+    assert main(["fleet", "status"], registry=registry) == 2
+    assert "fleet set-reference" in capsys.readouterr().err
+
+
+def test_fleet_status(registry, mirrored, capsys):
+    main(["fleet", "set-reference", "den"], registry=registry)
+    assert registry.reference == "den"
+    assert main(["fleet", "status"], registry=registry) == 1
+    out = capsys.readouterr().out
+    assert "garage: 3 differences" in out
+    assert "kodi: outdated (190 vs 200)" in out
+    assert "plex: missing" in out
+    assert "old.game: not on reference" in out
+
+
+def test_fleet_sync(registry, mirrored, capsys):
+    main(["fleet", "set-reference", "den"], registry=registry)
+    assert main(["fleet", "sync"], registry=registry) == 0
+    out = capsys.readouterr().out
+    assert "kodi: updated to 200" in out
+    assert "plex: installed 50" in out
+    assert "old.game: not on reference, left as is (use --prune)" in out
+    assert main(["fleet", "sync", "--prune"], registry=registry) == 0
+    assert main(["fleet", "status"], registry=registry) == 0
+    assert "garage: in sync" in capsys.readouterr().out
+
+
+def test_reference_survives_other_registry_changes(registry, fleet):
+    registry.set_reference("den")
+    registry.add(Device("attic", "10.0.0.9"))
+    assert registry.reference == "den"
+    registry.remove("den")
+    assert registry.reference is None
+
+
+def test_fleet_unreachable_reference(registry, fleet, capsys):
+    registry.add(Device("attic", "10.0.0.9"))
+    assert main(["fleet", "status", "--from", "attic"], registry=registry) == 1
+    assert "can't read apps from reference attic: unreachable" in capsys.readouterr().err
