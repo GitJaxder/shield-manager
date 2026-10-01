@@ -40,6 +40,7 @@ class Step:
     download_site: str | None = None  # "APKMirror" etc.; None when download_page is a search
     parts: str = ""  # for split APKs and bundles, e.g. "base + armeabi-v7a + xhdpi"
     remove: bool = False  # removes the app instead of installing it
+    setting: str | None = None  # a settings sync step: the value it sets, e.g. "15 min"
 
     def update(self, stage: str, percent: float | None = None, error: str | None = None) -> None:
         self.stage, self.percent, self.error = stage, percent, error
@@ -58,6 +59,7 @@ class Step:
             "download_site": self.download_site,
             "parts": self.parts,
             "remove": self.remove,
+            "setting": self.setting,
         }
 
 
