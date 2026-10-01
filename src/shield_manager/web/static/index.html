@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Shield Manager</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #fff; --text: #16191d; --muted: #5d6671; --border: #e0e3e8;
+    --accent: #76b900; --accent-ink: #0d1400; --accent-soft: #eef7dc; --danger: #c62828;
+    --warn: #a35f00; --warn-soft: #fff3e0; --ok: #2e7d32; --chip: #eef0f3;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1215; --panel: #191d22; --text: #e8ebee; --muted: #9aa4af; --border: #2a3038;
+      --accent: #76b900; --accent-ink: #0d1400; --accent-soft: #1f2a10; --danger: #ef6b67;
+      --warn: #ffb74d; --warn-soft: #2e2413; --ok: #81c784; --chip: #252b33;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: env(safe-area-inset-bottom); }
+  button, input, select { font: inherit; color: inherit; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel);
+    border-bottom: 1px solid var(--border); }
+  .bar { max-width: 1100px; margin: 0 auto; padding: 10px 16px 0; }
+  .title { display: flex; align-items: center; gap: 10px; }
+  .title h1 { font-size: 17px; margin: 0; flex: 1; }
+  .logo { width: 26px; height: 26px; border-radius: 7px; background: var(--accent);
+    display: grid; place-items: center; color: var(--accent-ink); font-weight: 800; font-size: 14px; }
+  nav { display: flex; gap: 4px; margin-top: 6px; }
+  nav button { background: none; border: none; padding: 10px 12px; border-bottom: 3px solid transparent;
+    color: var(--muted); font-weight: 600; cursor: pointer; }
+  nav button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 14px 16px 96px; }
+  .search { position: relative; margin-bottom: 12px; }
+  .search input { width: 100%; padding: 11px 14px 11px 38px; border-radius: 12px;
+    border: 1px solid var(--border); background: var(--panel); }
+  .search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px;
+    scrollbar-width: none; }
+  .chips button { flex: none; border: 1px solid var(--border); background: var(--panel);
+    padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 14px; }
+  .chips button[aria-pressed=true] { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .banner { display: flex; gap: 12px; align-items: center; background: var(--warn-soft);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+  .banner.ok { background: var(--accent-soft); }
+  .banner p { margin: 0; flex: 1; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; gap: 8px; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 14px; cursor: pointer; text-align: left; display: flex;
+    flex-direction: column; align-items: flex-start; gap: 10px; min-width: 0; width: 100%; }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (max-width: 520px) { .card { flex-direction: row; align-items: center; padding: 10px 12px; } }
+  .icon { width: 56px; height: 56px; border-radius: 14px; flex: none; object-fit: cover;
+    background: var(--chip); display: grid; place-items: center; font-weight: 700; font-size: 22px;
+    color: #fff; overflow: hidden; }
+  .icon img { width: 100%; height: 100%; object-fit: contain; }
+  .card .meta { min-width: 0; flex: 1; width: 100%; }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pkg { font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status { font-size: 13px; margin-top: 4px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--danger); }
+  .muted { color: var(--muted); }
+  .btn { border: 1px solid var(--border); background: var(--panel); border-radius: 10px;
+    padding: 8px 14px; cursor: pointer; font-weight: 600; white-space: nowrap; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.danger { color: var(--danger); }
+  .btn.small { padding: 5px 10px; font-size: 14px; }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 16px; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .04em; margin: 18px 0 8px; }
+  /* bottom sheet */
+  dialog { border: none; padding: 0; background: var(--panel); color: var(--text);
+    width: min(560px, 100%); max-height: 88vh; border-radius: 18px; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  @media (max-width: 600px) {
+    dialog { margin: auto 0 0; max-width: 100%; border-radius: 18px 18px 0 0;
+      padding-bottom: env(safe-area-inset-bottom); }
+  }
+  .sheet { padding: 18px; overflow-y: auto; max-height: 88vh; }
+  .sheet-head { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+  .sheet-head .icon { width: 72px; height: 72px; border-radius: 18px; font-size: 28px; }
+  .sheet-head h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
+  .tvbanner { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 12px;
+    background: #000; margin-bottom: 14px; display: block; }
+  .rows { border-top: 1px solid var(--border); }
+  .row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .row .grow { flex: 1; min-width: 0; }
+  .close { margin-left: auto; align-self: flex-start; border: none; background: var(--chip);
+    width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font-size: 18px; flex: none; }
+  .star { color: var(--accent); font-size: 12px; font-weight: 700; margin-left: 6px; }
+  /* shields tab */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 4px 14px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  .panel.pad { padding: 14px; }
+  .panel .row:last-child { border-bottom: none; }
+  .form { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+  .form input, .form select { padding: 9px 10px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); min-width: 0; }
+  .form .full { grid-column: 1 / -1; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  @media (max-width: 520px) { #devices .row { flex-wrap: wrap; } #devices .actions { width: 100%; justify-content: flex-start; } }
+  /* jobs tray */
+  #tray { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom));
+    width: min(520px, calc(100% - 24px)); display: grid; gap: 8px; z-index: 20; }
+  .job { background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 14px;
+    display: flex; gap: 10px; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .job .grow { flex: 1; min-width: 0; }
+  .job small { opacity: .75; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job button { background: none; border: none; color: inherit; cursor: pointer; font-size: 18px; }
+  .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid currentColor;
+    border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="title"><div class="logo">S</div><h1>Shield Manager</h1></div>
+    <nav role="tablist">
+      <button role="tab" data-tab="apps" aria-selected="true">Apps</button>
+      <button role="tab" data-tab="shields" aria-selected="false">Shields</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div id="tab-apps">
+    <div class="search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search apps" autocomplete="off" aria-label="Search apps">
+    </div>
+    <div class="chips" id="filters">
+      <button data-filter="all" aria-pressed="true">All apps</button>
+      <button data-filter="missing" aria-pressed="false">Missing somewhere</button>
+      <button data-filter="updates" aria-pressed="false">Updates</button>
+    </div>
+    <div id="sync-banner"></div>
+    <div id="apps"><div class="empty">Loading apps from your Shields…</div></div>
+  </div>
+
+  <div id="tab-shields" hidden>
+    <div class="section-title">Your Shields</div>
+    <div class="panel" id="devices"></div>
+
+    <div class="section-title">Add a Shield</div>
+    <form class="panel pad form" id="add-device">
+      <input name="name" placeholder="Name, e.g. living-room" required aria-label="Name">
+      <input name="host" placeholder="IP address" required aria-label="IP address" inputmode="decimal">
+      <input name="port" placeholder="Port (5555)" inputmode="numeric" aria-label="Port">
+      <input name="groups" placeholder="Groups (optional)" aria-label="Groups">
+      <button class="btn primary full">Add Shield</button>
+      <p class="muted full" style="margin:0;font-size:13px">
+        Turn on Network debugging in the Shield's Developer options first. The first time it connects,
+        accept the "Allow network debugging?" prompt on the TV.
+      </p>
+    </form>
+
+    <div class="section-title">Install an APK file</div>
+    <form class="panel pad" id="install">
+      <input type="file" name="apk" accept=".apk" required style="max-width:100%">
+      <div class="checks" id="install-targets" style="margin:12px 0"></div>
+      <label class="muted"><input type="checkbox" name="downgrade"> Allow downgrade</label>
+      <div style="margin-top:12px"><button class="btn primary">Install</button></div>
+    </form>
+  </div>
+</main>
+
+<dialog id="sheet"><div class="sheet" id="sheet-body"></div></dialog>
+<div id="tray" aria-live="polite"></div>
+
+<script>
+// Every URL is relative so the page works behind a path prefix (e.g. Home Assistant ingress).
+const $ = (s, el = document) => el.querySelector(s);
+const state = { catalog: null, devices: [], filter: "all", q: "" };
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+async function api(method, path, body, headers = {}) {
+  const opts = {method, headers: {"X-Shield-Manager": "1", ...headers}};
+  if (body instanceof Blob) opts.body = body;
+  else if (body !== undefined) {
+    opts.body = JSON.stringify(body);
+    opts.headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch("api/" + path, opts);
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+// ---- notices & background jobs ----------------------------------------------------
+function notice(text, kind = "", ms = 5000) {
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = `<div class="grow">${esc(text)}</div><button aria-label="Dismiss">×</button>`;
+  el.querySelector("button").onclick = () => el.remove();
+  $("#tray").append(el);
+  if (ms) setTimeout(() => el.remove(), ms);
+}
+
+function summarize(job) {
+  if (job.error) return job.error;
+  const bad = job.results.filter((r) => !r.ok);
+  const done = job.results.filter((r) => r.ok && !r.skipped);
+  if (bad.length) return bad.map((r) => `${r.device}: ${r.error || Object.values(r.failed || {})[0] || "failed"}`).join("; ");
+  if (!job.results.length) return "Nothing to do";
+  return done.length ? `Done on ${done.map((r) => r.device).join(", ")}` : "Already up to date";
+}
+
+function track(job) {
+  const el = document.createElement("div");
+  el.className = "job";
+  $("#tray").append(el);
+  const draw = (j) => {
+    const running = j.state === "running";
+    el.innerHTML = `${running ? '<div class="spinner"></div>' : ""}
+      <div class="grow"><strong>${esc(j.title)}</strong>
+      <small>${esc(running ? (j.progress || "Working…") : summarize(j))}</small></div>
+      ${running ? "" : '<button aria-label="Dismiss">×</button>'}`;
+    const x = el.querySelector("button");
+    if (x) x.onclick = () => el.remove();
+  };
+  draw(job);
+  const poll = async () => {
+    try {
+      const j = await api("GET", "jobs/" + job.id);
+      draw(j);
+      if (j.state === "running") return setTimeout(poll, 1500);
+      loadCatalog();
+      if (!j.results.some((r) => !r.ok) && !j.error) setTimeout(() => el.remove(), 8000);
+    } catch (e) { setTimeout(poll, 4000); }
+  };
+  setTimeout(poll, 1000);
+}
+
+// ---- app store --------------------------------------------------------------------
+const shieldNames = () => (state.catalog?.shields || []).filter((s) => s.ok).map((s) => s.name);
+
+function appState(app) {
+  const names = shieldNames();
+  const newest = Math.max(...Object.values(app.versions));
+  const missing = names.filter((n) => !(n in app.versions));
+  const older = names.filter((n) => n in app.versions && app.versions[n] < newest);
+  return {newest, missing, older};
+}
+
+function tile(app, cls = "icon") {
+  const label = app.label || app.package;
+  if (app.icon) return `<div class="${cls}"><img src="api/images/${encodeURIComponent(app.icon)}" alt="" loading="lazy"></div>`;
+  let h = 0;
+  for (const c of app.package) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const generic = new Set(["com", "org", "net", "tv", "android", "app", "apps", "beta", "google", "www"]);
+  const word = app.label || app.package.split(".").find((w) => !generic.has(w)) || app.package;
+  const letter = word[0].toUpperCase();
+  return `<div class="${cls}" style="background:hsl(${h % 360} 45% 42%)">${esc(letter)}</div>`;
+}
+
+function statusLine(app) {
+  const {missing, older} = appState(app);
+  if (missing.length) return `<span class="warn">Not on ${esc(missing.join(", "))}</span>`;
+  if (older.length) return `<span class="warn">Update on ${esc(older.join(", "))}</span>`;
+  return `<span class="ok">On every Shield</span>`;
+}
+
+function renderApps() {
+  const box = $("#apps");
+  const cat = state.catalog;
+  if (!cat) return;
+  if (!cat.shields.length) {
+    box.innerHTML = `<div class="empty">No Shields yet.<br><br><button class="btn primary" id="go-add">Add a Shield</button></div>`;
+    $("#go-add").onclick = () => showTab("shields");
+    $("#sync-banner").innerHTML = "";
+    return;
+  }
+  const q = state.q.trim().toLowerCase();
+  let apps = cat.apps.filter((a) => !q || (a.label || "").toLowerCase().includes(q) || a.package.toLowerCase().includes(q));
+  if (state.filter === "missing") apps = apps.filter((a) => appState(a).missing.length);
+  if (state.filter === "updates") apps = apps.filter((a) => appState(a).older.length);
+  apps.sort((a, b) => (a.label || a.package).localeCompare(b.label || b.package, undefined, {sensitivity: "base"}));
+  box.innerHTML = apps.length
+    ? `<div class="grid">${apps.map((a) => `
+        <button class="card" data-pkg="${esc(a.package)}">
+          ${tile(a)}
+          <div class="meta"><div class="name">${esc(a.label || a.package)}</div>
+          ${a.label ? `<div class="pkg">${esc(a.package)}</div>` : ""}
+          <div class="status">${statusLine(a)}</div></div>
+        </button>`).join("")}</div>`
+    : `<div class="empty">${q ? "No apps match your search." : "Nothing here."}</div>`;
+
+  const offline = cat.shields.filter((s) => !s.ok);
+  const behind = cat.shields.filter((s) => s.drift && (s.drift.install || s.drift.update));
+  const parts = [];
+  if (!cat.reference) parts.push(`<div class="banner"><p>Pick a reference Shield on the Shields tab so the others can mirror it.</p></div>`);
+  else if (behind.length) {
+    const n = behind.reduce((t, s) => t + s.drift.install + s.drift.update, 0);
+    parts.push(`<div class="banner"><p><strong>${behind.map((s) => esc(s.name)).join(", ")}</strong> ${behind.length > 1 ? "are" : "is"} missing ${n} app${n > 1 ? "s" : ""} or update${n > 1 ? "s" : ""} from ${esc(cat.reference)}.</p>
+      <button class="btn primary" id="sync-now">Sync now</button></div>`);
+  } else if (cat.shields.length > 1 && !offline.length) {
+    parts.push(`<div class="banner ok"><p>Every Shield matches ${esc(cat.reference)}.</p></div>`);
+  }
+  for (const s of offline) parts.push(`<div class="banner"><p class="err">Can't reach ${esc(s.name)}: ${esc(s.error)}</p></div>`);
+  $("#sync-banner").innerHTML = parts.join("");
+  const sync = $("#sync-now");
+  if (sync) sync.onclick = async () => {
+    sync.disabled = true;
+    try { track(await api("POST", "sync", {})); } catch (e) { notice(e.message, "err"); sync.disabled = false; }
+  };
+}
+
+let metaTimer = null;
+async function loadCatalog() {
+  try {
+    state.catalog = await api("GET", "catalog");
+  } catch (e) {
+    $("#apps").innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
+    return;
+  }
+  renderApps();
+  clearTimeout(metaTimer);
+  if (state.catalog.meta_pending) metaTimer = setTimeout(pollMeta, 2000);
+}
+
+async function pollMeta() {
+  // Names and icons are read from the Shields in the background; fill them in as they land.
+  try {
+    const meta = await api("GET", "catalog/meta");
+    for (const app of state.catalog.apps) Object.assign(app, meta.apps[app.package] || {});
+    renderApps();
+    if (meta.pending) metaTimer = setTimeout(pollMeta, 2500);
+  } catch { metaTimer = setTimeout(pollMeta, 5000); }
+}
+
+function openApp(pkg) {
+  const app = state.catalog.apps.find((a) => a.package === pkg);
+  if (!app) return;
+  const {newest, missing, older} = appState(app);
+  const ref = state.catalog.reference;
+  const rows = state.catalog.shields.map((s) => {
+    const v = app.versions[s.name];
+    let info, action = "";
+    if (!s.ok) info = `<span class="err">Offline</span>`;
+    else if (v === undefined) {
+      info = `<span class="muted">Not installed</span>`;
+      action = `<button class="btn primary small" data-install="${esc(s.name)}">Install</button>`;
+    } else if (v < newest) {
+      info = `<span class="warn">Version ${v}, newer is ${newest}</span>`;
+      action = `<button class="btn primary small" data-install="${esc(s.name)}">Update</button>`;
+    } else {
+      info = `<span class="ok">Installed</span> <span class="muted">· ${v}</span>`;
+      action = `<button class="btn danger small" data-remove="${esc(s.name)}">Remove</button>`;
+    }
+    return `<div class="row"><div class="grow"><strong>${esc(s.name)}</strong>${s.name === ref ? '<span class="star">REFERENCE</span>' : ""}<div style="font-size:14px">${info}</div></div>${action}</div>`;
+  }).join("");
+  const targets = [...missing, ...older];
+  $("#sheet-body").innerHTML = `
+    ${app.banner ? `<img class="tvbanner" src="api/images/${encodeURIComponent(app.banner)}" alt="">` : ""}
+    <div class="sheet-head">${tile(app)}<div style="min-width:0"><h2>${esc(app.label || app.package)}</h2><div class="pkg">${esc(app.package)}</div></div>
+      <button class="close" aria-label="Close">×</button></div>
+    ${targets.length > 1 ? `<button class="btn primary" style="width:100%;margin-bottom:12px" data-install="${esc(targets.join(","))}">Install on all ${targets.length} Shields that need it</button>` : ""}
+    <div class="rows">${rows}</div>
+    <p class="muted" style="font-size:13px;margin:12px 0 0">Installs copy the app from a Shield that already has the newest version. Removing an app deletes its data on that Shield.</p>`;
+  const sheet = $("#sheet");
+  $("#sheet-body").onclick = async (ev) => {
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.classList.contains("close")) return sheet.close();
+    if (b.dataset.install) {
+      b.disabled = true;
+      try {
+        track(await api("POST", "install-from-shield", {package: pkg, devices: b.dataset.install.split(",")}));
+        sheet.close();
+      } catch (e) { notice(e.message, "err"); b.disabled = false; }
+    } else if (b.dataset.remove) {
+      const name = b.dataset.remove;
+      if (!confirm(`Remove ${app.label || pkg} from ${name}? Its data on that Shield is deleted.`)) return;
+      b.disabled = true;
+      try {
+        const r = (await api("POST", "uninstall", {package: pkg, devices: [name]})).results[0];
+        if (!r.ok) throw new Error(r.error);
+        notice(`Removed from ${name}`);
+        sheet.close();
+        loadCatalog();
+      } catch (e) { notice(e.message, "err"); b.disabled = false; }
+    }
+  };
+  sheet.showModal();
+}
+
+$("#sheet").addEventListener("click", (ev) => { if (ev.target.id === "sheet") ev.target.close(); });
+$("#apps").addEventListener("click", (ev) => {
+  const card = ev.target.closest(".card");
+  if (card) openApp(card.dataset.pkg);
+});
+$("#q").addEventListener("input", (ev) => { state.q = ev.target.value; renderApps(); });
+$("#filters").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  state.filter = b.dataset.filter;
+  for (const x of $("#filters").children) x.setAttribute("aria-pressed", x === b);
+  renderApps();
+});
+
+// ---- shields ----------------------------------------------------------------------
+function renderDevices() {
+  const box = $("#devices");
+  box.innerHTML = state.devices.length ? state.devices.map((d) => `
+    <div class="row" data-name="${esc(d.name)}">
+      <div class="grow"><strong>${esc(d.name)}</strong>${d.reference ? '<span class="star">REFERENCE</span>' : ""}
+        <div class="pkg">${esc(d.address)}${d.groups.length ? " · " + d.groups.map(esc).join(", ") : ""}</div>
+        <div class="check muted" style="font-size:13px"></div></div>
+      <div class="actions">
+        ${d.reference ? "" : '<button class="btn small" data-act="ref">Make reference</button>'}
+        <button class="btn small" data-act="info">Check</button>
+        <button class="btn small" data-act="groups">Groups</button>
+        <button class="btn small danger" data-act="remove">Remove</button>
+      </div></div>`).join("")
+    : `<p class="muted">No Shields yet. Add one below.</p>`;
+  $("#install-targets").innerHTML = state.devices.map((d) =>
+    `<label><input type="checkbox" name="target" value="${esc(d.name)}" checked> ${esc(d.name)}</label>`).join("");
+}
+
+async function loadDevices() {
+  state.devices = await api("GET", "devices");
+  renderDevices();
+}
+
+$("#devices").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  const row = b.closest(".row");
+  const name = row.dataset.name;
+  const path = "devices/" + encodeURIComponent(name);
+  const run = async (fn) => {
+    b.disabled = true;
+    try { await fn(); } catch (e) { notice(e.message, "err"); } finally { b.disabled = false; }
+  };
+  if (b.dataset.act === "remove") {
+    if (!confirm(`Forget ${name}? Nothing on the Shield changes.`)) return;
+    run(async () => { await api("DELETE", path); await loadDevices(); loadCatalog(); });
+  } else if (b.dataset.act === "ref") {
+    run(async () => { await api("PUT", "reference", {name}); await loadDevices(); loadCatalog(); });
+  } else if (b.dataset.act === "groups") {
+    const d = state.devices.find((x) => x.name === name);
+    const input = prompt(`Groups for ${name}, separated by commas`, d.groups.join(", "));
+    if (input === null) return;
+    run(async () => {
+      await api("PUT", path + "/groups", {groups: input.split(",").map((g) => g.trim()).filter(Boolean)});
+      await loadDevices();
+    });
+  } else if (b.dataset.act === "info") {
+    run(async () => {
+      const r = await api("GET", path + "/info");
+      const el = $(".check", row);
+      el.className = "check " + (r.ok ? "ok" : "err");
+      el.textContent = r.ok ? `Connected · ${r.result.model} · Android ${r.result.android}` : r.error;
+    });
+  }
+});
+
+$("#add-device").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  const b = ev.target.querySelector("button");
+  b.disabled = true;
+  try {
+    await api("POST", "devices", {
+      name: f.name.value.trim(), host: f.host.value.trim(), port: f.port.value || undefined,
+      groups: f.groups.value.split(",").map((g) => g.trim()).filter(Boolean),
+    });
+    ev.target.reset();
+    await loadDevices();
+    loadCatalog();
+  } catch (e) { notice(e.message, "err"); } finally { b.disabled = false; }
+});
+
+$("#install").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  const file = form.elements.apk.files[0];
+  const targets = [...form.querySelectorAll("input[name=target]:checked")].map((i) => i.value);
+  if (!targets.length) return notice("Pick at least one Shield", "err");
+  const b = form.querySelector("button");
+  b.disabled = true;
+  b.textContent = "Uploading…";
+  try {
+    const q = new URLSearchParams({devices: targets.join(","), allow_downgrade: form.elements.downgrade.checked ? "1" : "0"});
+    track(await api("POST", "install?" + q, file, {"Content-Type": "application/vnd.android.package-archive"}));
+    form.reset();
+    renderDevices();
+  } catch (e) { notice(e.message, "err"); } finally { b.disabled = false; b.textContent = "Install"; }
+});
+
+// ---- tabs -------------------------------------------------------------------------
+function showTab(name) {
+  for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", b.dataset.tab === name);
+  $("#tab-apps").hidden = name !== "apps";
+  $("#tab-shields").hidden = name !== "shields";
+  try { localStorage.setItem("tab", name); } catch {}
+}
+document.querySelector("nav").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  if (b) showTab(b.dataset.tab);
+});
+
+let saved = "apps";
+try { saved = localStorage.getItem("tab") || "apps"; } catch {}
+showTab(saved);
+loadDevices().catch((e) => notice(e.message, "err"));
+loadCatalog();
+api("GET", "jobs").then((jobs) => jobs.filter((j) => j.state === "running").forEach(track)).catch(() => {});
+</script>
+</body>
+</html>
