@@ -382,3 +382,76 @@ def test_now_showing_skips_the_screenshot_while_asleep(ui, monkeypatch):
     assert status == 200
     assert all(s["ok"] and not s["awake"] and not s["image"] for s in shown)
     assert ui("GET", "/api/screens/den")[0] == 404
+
+
+ARM64 = ["arm64-v8a", "armeabi-v7a", "armeabi"]
+ARM32 = ["armeabi-v7a", "armeabi"]
+
+
+@pytest.fixture
+def mixed_ui(tmp_path, monkeypatch):
+    """den (reference, 64-bit) and attic (32-bit) have Plex; living (32-bit) doesn't."""
+    registry = Registry(tmp_path / "devices.json")
+    for name, host in (("den", "10.0.0.2"), ("attic", "10.0.0.4"), ("living", "10.0.0.3")):
+        registry.add(Device(name, host))
+    registry.set_reference("den")
+    installed = {
+        "den": {"com.plexapp.android": (5, "5")},
+        "attic": {"com.plexapp.android": (5, "5")},
+        "living": {},
+    }
+    abis = {"den": ARM64, "attic": ARM32, "living": ARM32}
+    pulled_from = []
+
+    def connect(device):
+        conn = FakeConnection(installed=installed[device.name], abis=abis[device.name])
+        conn.installed = installed[device.name]
+        real_pull = conn.pull
+
+        def pull(*args, **kwargs):
+            pulled_from.append(device.name)
+            return real_pull(*args, **kwargs)
+
+        conn.pull = pull
+        return conn
+
+    monkeypatch.setattr(appinfo, "fetch_meta", lambda *a: None)
+    server = create_server(registry, port=0, connect=connect, cache_dir=tmp_path / "cache")
+    api = server.api
+    server.server_close()
+    return api, installed, abis, pulled_from
+
+
+def _run(api, job):
+    for _ in range(200):
+        j = api.jobs.get(job["id"]).to_dict()
+        if j["state"] != "running":
+            return j
+        time.sleep(0.02)
+    raise AssertionError("job didn't finish")
+
+
+@pytest.mark.parametrize("action", ["install", "sync"])
+def test_copies_come_from_a_shield_of_the_same_cpu_type(mixed_ui, action):
+    api, installed, _, pulled_from = mixed_ui
+    if action == "install":
+        job = api.install_from_shield({"packages": ["com.plexapp.android"], "devices": ["living"]})
+    else:
+        job = api.sync({"devices": ["living"]})
+    job = _run(api, job)
+    assert job["state"] == "done", job
+    assert installed["living"]["com.plexapp.android"][0] == 5
+    assert pulled_from == ["attic"]
+    assert [s["source"] for s in job["steps"]] == ["attic"]
+
+
+def test_copy_reports_an_app_no_shield_has_a_compatible_copy_of(mixed_ui):
+    api, installed, abis, _ = mixed_ui
+    abis["attic"] = ["x86"]
+    job = _run(
+        api, api.install_from_shield({"packages": ["com.plexapp.android"], "devices": ["living"]})
+    )
+    [step] = job["steps"]
+    assert step["stage"] == "failed"
+    assert "not compatible with this Shield" in step["error"]
+    assert "com.plexapp.android" not in installed["living"]
