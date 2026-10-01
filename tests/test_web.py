@@ -461,7 +461,7 @@ def test_copy_reports_an_app_no_shield_has_a_compatible_copy_of(mixed_ui):
     )
     [step] = job["steps"]
     assert step["stage"] == "failed"
-    assert "not compatible with this Shield" in step["error"]
+    assert "no copy this Shield can run" in step["error"]
     assert step["store"]  # the page offers the Play Store button
     assert "com.plexapp.android" not in installed["living"]
 

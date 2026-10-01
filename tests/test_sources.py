@@ -141,3 +141,9 @@ def test_github_newer_takes_the_newest_release(tmp_path):
     assert path.name == "SmartTube_2.0_armeabi-v7a.apk"
     with pytest.raises(SourceUnavailable, match="isn't newer"):
         d.github(Wanted(PKG, 201, "2.0", ARM32, newer=True), tmp_path / "out2")
+
+
+def test_page_site_names_the_download_site():
+    assert sources.page_site("https://www.apkmirror.com/apk/x/") == "APKMirror"
+    assert sources.page_site("https://smarttube.en.uptodown.com/android/download/1-x") == "Uptodown"
+    assert sources.page_site(sources.web_search_url("a.b", None, "x86")) is None

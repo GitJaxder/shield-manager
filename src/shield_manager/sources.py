@@ -191,6 +191,24 @@ class Downloader:
         return page
 
 
+# Download sites Morphe's server sends people to, by host.
+PAGE_SITES = {
+    "apkmirror.com": "APKMirror",
+    "uptodown.com": "Uptodown",
+    "apkpure.com": "APKPure",
+    "apkcombo.com": "APKCombo",
+}
+
+
+def page_site(url: str) -> str | None:
+    """The download site a download_page() link opens ("APKMirror", ...), or None for a
+    web search."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return next(
+        (name for h, name in PAGE_SITES.items() if host == h or host.endswith("." + h)), None
+    )
+
+
 def morphe_url(package: str, version_name: str | None, abi: str) -> str:
     return MORPHE_SEARCH_URL + urllib.parse.quote(f"{package}~{version_name or 'any'}~{abi}")
 
