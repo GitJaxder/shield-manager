@@ -1,7 +1,12 @@
+import zipfile
+
 import pytest
 
 from shield_manager.cli import main
-from shield_manager.registry import Registry
+from shield_manager.registry import Device, Registry
+from tests.axml import build_manifest
+from tests.fakes import FakeConnection
+from tests.test_apk import ATTRS, STRINGS
 
 
 @pytest.fixture
@@ -37,3 +42,73 @@ def test_version(capsys):
         main(["--version"])
     assert exc.value.code == 0
     assert "shield-manager" in capsys.readouterr().out
+
+
+@pytest.fixture
+def fleet(registry, monkeypatch):
+    """Two registered devices whose ADB connections are fakes."""
+    from shield_manager import adb
+
+    registry.add(Device("den", "10.0.0.2", groups=("upstairs",)))
+    registry.add(Device("garage", "10.0.0.4"))
+    conns = {
+        "den": FakeConnection(responses={"pm uninstall": "Success"}),
+        "garage": FakeConnection(responses={"pm uninstall": "Success"}),
+    }
+
+    def connect(device):
+        if device.name not in conns:
+            raise ConnectionRefusedError("unreachable")
+        return conns[device.name]
+
+    monkeypatch.setattr(adb, "connect", connect)
+    return conns
+
+
+def test_device_add_with_group_and_set_groups(registry, capsys):
+    main(["device", "add", "den", "10.0.0.2", "-g", "kids"], registry=registry)
+    main(["device", "list"], registry=registry)
+    assert "den\t10.0.0.2:5555\t[kids]" in capsys.readouterr().out
+    main(["device", "set-groups", "den", "living", "upstairs"], registry=registry)
+    assert registry.get("den").groups == ("living", "upstairs")
+
+
+def test_app_requires_targets(registry, capsys):
+    assert main(["app", "version", "com.example.tv"], registry=registry) == 2
+    assert "--device, --group or --all" in capsys.readouterr().err
+
+
+def test_app_uninstall_by_group(registry, fleet, capsys):
+    assert main(["app", "uninstall", "com.example.tv", "-g", "upstairs"], registry=registry) == 0
+    assert fleet["den"].commands == ["pm uninstall com.example.tv"]
+    assert fleet["garage"].commands == []
+    assert fleet["den"].closed
+    assert "den: removed com.example.tv" in capsys.readouterr().out
+
+
+def test_app_install_all(registry, fleet, tmp_path, capsys):
+    apk = tmp_path / "app.apk"
+    with zipfile.ZipFile(apk, "w") as zf:
+        zf.writestr("AndroidManifest.xml", build_manifest(ATTRS, STRINGS))
+    for conn in fleet.values():
+        conn.responses["pm install"] = "Success"
+        conn.installed["com.example.tv"] = (42, "1.4.2")
+    assert main(["app", "install", str(apk), "--all"], registry=registry) == 0
+    out = capsys.readouterr().out
+    assert "com.example.tv 1.4.2 (versionCode 42)" in out
+    assert "garage: installed 1.4.2 (versionCode 42)" in out
+    assert "2/2 devices succeeded" in out
+
+
+def test_one_unreachable_device_fails_without_stopping_others(registry, fleet, capsys):
+    registry.add(Device("attic", "10.0.0.9"))
+    assert main(["app", "version", "com.example.tv", "--all"], registry=registry) == 1
+    captured = capsys.readouterr()
+    assert "attic: FAILED: unreachable" in captured.err
+    assert "den: not installed" in captured.out
+    assert "2/3 devices succeeded" in captured.out
+
+
+def test_app_unknown_group(registry, capsys):
+    assert main(["app", "list", "-g", "nope"], registry=registry) == 1
+    assert "no devices in group 'nope'" in capsys.readouterr().err
