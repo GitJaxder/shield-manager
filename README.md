@@ -4,8 +4,10 @@ Deploy apps, packages, and updates to Nvidia Shield devices over network ADB.
 
 ## Status
 
-Early. It can register Shields, organise them into groups, and install, update, remove and
-list apps on one device, a group, or all of them. A package catalog is next.
+Early. The aim is a small home MDM: every Shield mirrors the same set of apps. Today it can
+register Shields, pick one as the reference, report how the others drift from it, and sync
+them to match. It can also install, update, remove and list apps on one device, a group, or
+all of them.
 
 ## Requirements
 
@@ -52,6 +54,26 @@ command exits non-zero if any device failed.
 
 The device list and the ADB key live in `~/.config/shield-manager/` (override with
 `SHIELD_MANAGER_HOME`).
+
+## Mirroring a reference Shield
+
+Pick the Shield whose apps the others should match, then check and sync:
+
+```sh
+shield-manager fleet set-reference living-room
+shield-manager fleet status              # exits 1 if any Shield differs
+shield-manager fleet sync --dry-run      # what sync would change
+shield-manager fleet sync                # copy missing and outdated apps from the reference
+```
+
+`sync` pulls each app's APK files (including Play Store split APKs) from the reference once
+and installs them on every Shield that needs them. It never removes or downgrades anything
+unless asked: `--prune` removes apps the reference doesn't have (this deletes their data) and
+`--allow-downgrade` replaces versions newer than the reference's. Use `--from NAME` for a
+one-off reference, or `-d`/`-g`/`--all` to limit which Shields are checked.
+
+Apps copied this way are sideloaded, so paid apps that check their Play Store licence may
+refuse to run until they are installed from the Play Store on that Shield.
 
 ## Development
 
