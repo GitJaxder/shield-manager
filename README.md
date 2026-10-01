@@ -11,16 +11,72 @@ all of them.
 
 ## Requirements
 
-- Python 3.10+
-- On each Shield: **Settings → Device Preferences → About**, tap **Build** seven times to
-  enable developer options, then turn on **Developer options → Network debugging**.
+- A computer on the same home network as your Shields (Windows, macOS or Linux).
+- Python 3.10 or newer. Check by running `python3 --version` (on Windows, `py --version`).
+  If it's missing or older, install it from <https://www.python.org/downloads/>. On Windows,
+  tick **Add python.exe to PATH** in the installer.
+- On each Shield, turn on network debugging:
+  1. Open **Settings → Device Preferences → About**.
+  2. Select **Build** seven times, until it says you are a developer.
+  3. Go back to **Device Preferences → Developer options** and turn on **Network debugging**.
+  4. Note the Shield's IP address. Network debugging shows it once it's on, and it's also under
+     **Settings → Network & Internet** when you select your network.
 
 ## Install
 
-```sh
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-```
+There is no released package yet, so you install shield-manager from this repository's source.
+
+1. Get the source code. Use either option:
+   - **Download:** on <https://github.com/GitJaxder/shield-manager>, click **Code → Download
+     ZIP**. Unzip it. You'll get a folder called `shield-manager-main`.
+   - **Git:** run `git clone https://github.com/GitJaxder/shield-manager.git`. You'll get a
+     folder called `shield-manager`.
+
+2. Open a terminal (on Windows, PowerShell) in that folder. For example:
+
+   ```sh
+   cd ~/Downloads/shield-manager-main
+   ```
+
+3. Create a private Python environment for the tool and switch to it.
+
+   macOS / Linux:
+
+   ```sh
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+   Windows (PowerShell):
+
+   ```powershell
+   py -m venv .venv
+   .venv\Scripts\Activate.ps1
+   ```
+
+   If PowerShell says running scripts is disabled, run
+   `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then try again.
+
+4. Install shield-manager and its dependencies:
+
+   ```sh
+   pip install .
+   ```
+
+5. Check that it works:
+
+   ```sh
+   shield-manager --version
+   ```
+
+   This should print `shield-manager 0.1.0`.
+
+The `shield-manager` command only works while the environment from step 3 is active. In a new
+terminal, `cd` back into the folder and run the `activate` line from step 3 again.
+
+**Updating:** download the ZIP again (or run `git pull` in the folder). Then, with the
+environment active, run `pip install .` again. Your devices and settings are kept, because
+they live in `~/.config/shield-manager/`, not in the source folder.
 
 ## Usage
 
@@ -76,6 +132,9 @@ Apps copied this way are sideloaded, so paid apps that check their Play Store li
 refuse to run until they are installed from the Play Store on that Shield.
 
 ## Development
+
+Follow the install steps, but in step 4 run `pip install -e ".[dev]"` instead, so code changes
+take effect without reinstalling and the test tools are installed. Then:
 
 ```sh
 ruff check . && ruff format --check .
