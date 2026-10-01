@@ -147,12 +147,6 @@ the app's releases come from (owner/name or the repo's URL, plus an optional fil
 pattern), like `source set` and `source remove`. The update check re-runs right after. Cards
 name the repo, and the **From GitHub** filter lists every app with a source (`source list`).
 
-The **Settings** tab compares each Shield's settings with the reference's, like `settings
-status`, for the kinds of settings you tick (the defaults match `settings sync`'s). It lists
-each difference with both values, says why a setting can't be copied yet, and keeps other
-differences in a collapsed list. **Sync settings** copies them to the Shields you tick, with
-a progress row per setting.
-
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
 at the bottom shows each app on each Shield moving through Downloading, Copying and Installing,
 with a percentage where the transfer reports one. App names and icons

@@ -17,7 +17,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from shield_manager import appinfo, bundle, deploy, fleet, screen, settings
+from shield_manager import appinfo, bundle, deploy, fleet, screen
 from shield_manager.apk import ApkError
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
@@ -98,28 +98,6 @@ def _tried(e: fleet.NoCompatibleCopy, shield: str) -> str:
     download page, the Play Store) as buttons, so they're left out."""
     lines = "".join(f"\n{i}. {src}: {outcome}" for i, (src, outcome) in enumerate(e.steps, 1))
     return f"No copy {shield} can run. What each source had:{lines}"
-
-
-def _diff_dict(diff: settings.SettingDiff) -> dict:
-    return {
-        "key": f"{diff.key[0]}/{diff.key[1]}",
-        "label": diff.label,
-        "category": diff.setting.category if diff.setting else None,
-        "reference": settings.describe_value(diff.setting, diff.reference),
-        "device": settings.describe_value(diff.setting, diff.device),
-        "syncable": diff.syncable,
-        "blocked": diff.blocked,
-    }
-
-
-def _settings_report(report: settings.SettingsReport) -> dict:
-    return {
-        "device": report.device.name,
-        "ok": report.error is None,
-        "error": report.error,
-        "diffs": [_diff_dict(d) for d in report.diffs],
-        "others": [_diff_dict(d) for d in report.others],
-    }
 
 
 def _source_dict(source: GitHubSource) -> dict:
@@ -869,106 +847,6 @@ class Api:
         return {"packages": packages, "results": results}
 
     # -- screens -------------------------------------------------------------------------
-
-    # -- settings ------------------------------------------------------------------------
-
-    def settings_info(self) -> dict:
-        """The setting categories to choose from, and the reference they're compared with."""
-        return {
-            "reference": self.registry.reference,
-            "categories": [
-                {"name": c.name, "description": c.description, "default": c.default}
-                for c in settings.CATEGORIES
-            ],
-        }
-
-    def _settings_args(self, body: dict) -> tuple[Device, list[Device], list[str] | None]:
-        reference_name = self.registry.reference
-        if not reference_name:
-            raise ApiError(HTTPStatus.BAD_REQUEST, "choose a reference Shield first")
-        categories = body.get("categories")
-        if categories is not None:
-            if not isinstance(categories, list):
-                raise ApiError(HTTPStatus.BAD_REQUEST, "categories must be a list")
-            categories = [str(c) for c in categories]
-            if not categories:
-                raise ApiError(HTTPStatus.BAD_REQUEST, "pick at least one category")
-            try:
-                settings.selected(categories)
-            except ValueError as e:
-                raise ApiError(HTTPStatus.BAD_REQUEST, str(e)) from e
-        names = body.get("devices")
-        targets = self._resolve(names) if names else self.registry.list()
-        return self._get(reference_name), targets, categories
-
-    def settings_status(self, body: dict) -> dict:
-        """Start comparing each Shield's settings with the reference's, like `settings
-        status`. The job's results hold one report per Shield."""
-        reference, targets, categories = self._settings_args(body)
-
-        def work(job: Job) -> None:
-            job.progress = f"Reading settings on {reference.name} and the other Shields"
-            reports = settings.status(
-                reference, targets, self.connect, categories, others=bool(body.get("others"))
-            )
-            job.results.extend(_settings_report(r) for r in reports)
-            job.progress = ""
-
-        return self.jobs.start(f"Compare settings with {reference.name}", work).to_dict()
-
-    def settings_sync(self, body: dict) -> dict:
-        """Set each Shield's chosen settings to the reference's values, like `settings
-        sync`. Each setting on each Shield is a step."""
-        reference, targets, categories = self._settings_args(body)
-
-        def work(job: Job) -> None:
-            job.progress = f"Reading settings on {reference.name} and the other Shields"
-            steps: dict[tuple[str, str], Step] = {}
-            for report in settings.status(reference, targets, self.connect, categories):
-                for diff in report.diffs:
-                    if diff.syncable:
-                        step = job.add_step(
-                            f"{diff.key[0]}/{diff.key[1]}", diff.label, report.device.name
-                        )
-                        step.setting = settings.describe_value(diff.setting, diff.reference)
-                        steps[(report.device.name, diff.label)] = step
-            pending = list(steps.values())
-
-            def start_next(device: str) -> None:
-                # The Shields are done one at a time, in the order the steps were made.
-                nxt = next((s for s in pending if s.device == device), None)
-                nxt = nxt or (pending[0] if pending else None)
-                if nxt:
-                    device = nxt.device
-                    job.progress = f"Setting {nxt.label} on {device}"
-                    nxt.update(INSTALLING)
-
-            def report_step(event: settings.SettingsProgress) -> None:
-                step = steps.get((event.device, event.label))
-                if step:
-                    step.update(FAILED if event.failed else DONE, error=event.failed or None)
-                    pending.remove(step)
-                start_next(event.device)
-
-            start_next("")
-            reports = settings.sync(
-                reference, targets, self.connect, categories, progress=report_step
-            )
-            for report in reports:
-                for step in [s for s in pending if s.device == report.device.name]:
-                    step.update(FAILED, error=report.error or "not changed")
-                job.results.append(
-                    {
-                        "device": report.device.name,
-                        "ok": report.error is None and not report.failed,
-                        "error": report.error,
-                        "failed": report.failed,
-                        "applied": report.applied,
-                    }
-                )
-            job.progress = ""
-
-        return self.jobs.start(f"Sync settings from {reference.name}", work).to_dict()
 
     def now_showing(self) -> list[dict]:
         """What each Shield is showing: the foreground app and a fresh screenshot."""

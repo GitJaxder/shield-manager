@@ -110,15 +110,6 @@
     background: var(--bg); min-width: 0; }
   .form .full { grid-column: 1 / -1; }
   .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
-  .setcats { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 8px 16px; }
-  .setcats label { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; }
-  .setcats input { margin-top: 3px; }
-  .setshield { margin-top: 12px; }
-  .setshield h3 { margin: 0; font-size: 16px; }
-  .setshield .row { align-items: flex-start; }
-  .setshield .vals { font-size: 14px; overflow-wrap: anywhere; }
-  .setshield details { margin-top: 8px; font-size: 14px; }
-  .setshield summary { cursor: pointer; color: var(--muted); }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   @media (max-width: 520px) { #devices .row { flex-wrap: wrap; } #devices .actions { width: 100%; justify-content: flex-start; } }
   /* jobs tray */
@@ -204,7 +195,6 @@
       <button role="tab" data-tab="apps" aria-selected="true">Apps</button>
       <button role="tab" data-tab="screens" aria-selected="false">Screens</button>
       <button role="tab" data-tab="shields" aria-selected="false">Shields</button>
-      <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
     </nav>
   </div>
   <div id="selbar" hidden>
@@ -239,17 +229,6 @@
     <div id="screens"><div class="empty">Looking at your Shields…</div></div>
     <p class="muted" style="font-size:13px">Refreshes every 10 seconds while this tab is open. Protected
       video (Netflix, Disney+ and most paid streaming apps) shows as black, but the app name still shows.</p>
-  </div>
-
-  <div id="tab-settings" hidden>
-    <div class="section-title">What to keep the same</div>
-    <div class="panel pad">
-      <div id="set-cats" class="setcats"></div>
-      <p class="muted" style="margin:10px 0 0;font-size:13px">Shield-specific settings (its name, network, ADB) are never copied.
-        Settings that name an app, like a keyboard or an accessibility service, wait until that app is installed.</p>
-    </div>
-    <div id="set-banner"></div>
-    <div id="set-results"><div class="empty">Comparing settings…</div></div>
   </div>
 
   <div id="tab-shields" hidden>
@@ -366,8 +345,8 @@ function stageText(st) {
     case "removing": return `Removing ${st.label} from ${st.device}`;
     case "downloading": return `Downloading ${st.label}${st.source ? ` from ${st.source}` : ""}${pct}`;
     case "copying": return `Copying ${st.label} to ${st.device}${parts}${pct}`;
-    case "installing": return st.setting != null ? `Setting ${st.label} to ${st.setting} on ${st.device}` : `Installing ${st.label} on ${st.device}${parts}`;
-    case "done": return st.remove ? "Removed" : st.setting != null ? `Set to ${st.setting}` : `Installed${parts}`;
+    case "installing": return `Installing ${st.label} on ${st.device}${parts}`;
+    case "done": return st.remove ? "Removed" : `Installed${parts}`;
     case "skipped": return "Already up to date";
     // The CLI hint at the end of the error is for the terminal; the page has a button instead.
     case "failed": return `Failed: ${(st.error || "unknown error").replace(/ \(`shield-manager [^`]*` [^)]*\)/, "")}`;
@@ -421,7 +400,7 @@ async function openStorePage(btn) {
 // Live install stages per app, so cards can say "Installing on den" while a job runs.
 const live = new Map();  // job id -> steps
 
-function track(job, onDone) {
+function track(job) {
   const el = document.createElement("div");
   el.className = "job";
   $("#tray").append(el);
@@ -463,7 +442,6 @@ function track(job, onDone) {
       if (j.state === "running") return setTimeout(poll, 700);
       loadCatalog();
       loadOnline();
-      if (onDone) onDone(j);
       if (!j.results.some((r) => !r.ok) && !j.error) setTimeout(() => el.remove(), 8000);
     } catch (e) { setTimeout(poll, 3000); }
   };
@@ -1164,123 +1142,13 @@ async function loadScreens() {
 }
 document.addEventListener("visibilitychange", loadScreens);
 
-// ---- settings (settings status / sync) ----------------------------------------------
-const sets = {info: null, reports: null, checking: false, again: false};
-
-function chosenCategories() {
-  return [...document.querySelectorAll("#set-cats input:checked")].map((i) => i.value);
-}
-
-async function loadSettings() {
-  try { sets.info = await api("GET", "settings"); } catch (e) {  // the reference may have changed
-    $("#set-results").innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
-    return;
-  }
-  if (!$("#set-cats").children.length) {
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem("setCats") || "null"); } catch {}
-    $("#set-cats").innerHTML = sets.info.categories.map((c) => {
-      const on = saved ? saved.includes(c.name) : c.default;
-      return `<label><input type="checkbox" value="${esc(c.name)}"${on ? " checked" : ""}><span>${esc(c.description)}</span></label>`;
-    }).join("");
-    $("#set-cats").onchange = () => {
-      try { localStorage.setItem("setCats", JSON.stringify(chosenCategories())); } catch {}
-      compareSettings();
-    };
-  }
-  compareSettings();
-}
-
-// Reads every Shield's settings in the background, then lists what differs.
-async function compareSettings() {
-  if (sets.checking) { sets.again = true; return; }
-  const categories = chosenCategories();
-  if (!sets.info.reference) {
-    $("#set-results").innerHTML = `<div class="empty">Pick a reference Shield on the Shields tab first. The others copy its settings.</div>`;
-    $("#set-banner").innerHTML = "";
-    return;
-  }
-  if (!categories.length) {
-    $("#set-results").innerHTML = `<div class="empty">Tick at least one kind of setting.</div>`;
-    $("#set-banner").innerHTML = "";
-    return;
-  }
-  sets.checking = true;
-  $("#set-banner").innerHTML = `<div class="banner"><p>Comparing settings with ${esc(sets.info.reference)}…</p></div>`;
-  try {
-    let job = await api("POST", "settings/status", {categories, others: true});
-    while (job.state === "running") {
-      await new Promise((r) => setTimeout(r, 700));
-      job = await api("GET", "jobs/" + job.id);
-    }
-    if (job.state === "failed") throw new Error(job.error || "couldn't compare settings");
-    sets.reports = job.results;
-    renderSettings();
-  } catch (e) {
-    $("#set-banner").innerHTML = "";
-    $("#set-results").innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
-  } finally {
-    sets.checking = false;
-    if (sets.again) { sets.again = false; compareSettings(); }
-  }
-}
-
-function settingRow(d) {
-  return `<div class="row"><div class="grow"><strong style="font-size:14px">${esc(d.label)}</strong>
-    <div class="vals"><span class="warn">${esc(d.device)}</span> here · <span class="ok">${esc(d.reference)}</span> on ${esc(sets.info.reference)}</div>
-    ${d.blocked ? `<div class="muted" style="font-size:13px">Not synced: ${esc(d.blocked)}</div>` : d.syncable ? "" : `<div class="muted" style="font-size:13px">Not set on ${esc(sets.info.reference)}, so left as is</div>`}</div></div>`;
-}
-
-function renderSettings() {
-  const ref = sets.info.reference;
-  const reports = sets.reports || [];
-  if (!reports.length) {
-    $("#set-banner").innerHTML = "";
-    $("#set-results").innerHTML = `<div class="empty">Add another Shield to keep its settings in line with ${esc(ref)}.</div>`;
-    return;
-  }
-  const todo = reports.filter((r) => r.ok && r.diffs.some((d) => d.syncable));
-  const count = todo.reduce((n, r) => n + r.diffs.filter((d) => d.syncable).length, 0);
-  $("#set-banner").innerHTML = todo.length
-    ? `<div class="banner"><p><strong>${plural(count, "setting")}</strong> on ${esc(listOf(todo.map((r) => r.device)))} ${count === 1 ? "differs" : "differ"} from ${esc(ref)}.</p>
-        <button class="btn primary" id="set-sync">Sync settings</button></div>`
-    : `<div class="banner ok"><p>Nothing to sync. Every setting that can be copied already matches ${esc(ref)}.</p></div>`;
-  $("#set-results").innerHTML = reports.map((r) => {
-    const syncable = r.ok ? r.diffs.filter((d) => d.syncable).length : 0;
-    let head;
-    if (!r.ok) head = `<span class="err">Can't reach it: ${esc(r.error)}</span>`;
-    else if (!r.diffs.length) head = `<span class="ok">Matches ${esc(ref)}</span>`;
-    else head = `<span class="warn">${plural(r.diffs.length, "setting")} ${r.diffs.length === 1 ? "differs" : "differ"}</span>`;
-    return `<div class="panel pad setshield">
-      <div class="row" style="padding-top:0"><div class="grow"><h3>${esc(r.device)}</h3><div style="font-size:14px">${head}</div></div>
-        ${syncable ? `<label class="muted" style="font-size:14px"><input type="checkbox" name="set-target" value="${esc(r.device)}" checked> Sync</label>` : ""}</div>
-      ${r.ok ? r.diffs.map(settingRow).join("") : ""}
-      ${r.ok && r.others.length ? `<details><summary>Other differences (${r.others.length})</summary>
-        <p class="muted" style="font-size:13px;margin:6px 0">Settings outside the list above that differ. They aren't synced.</p>
-        ${r.others.map(settingRow).join("")}</details>` : ""}</div>`;
-  }).join("");
-  const btn = $("#set-sync");
-  if (btn) btn.onclick = () => syncSettings(btn);
-}
-
-async function syncSettings(btn) {
-  const devices = [...document.querySelectorAll("input[name=set-target]:checked")].map((i) => i.value);
-  if (!devices.length) return notice("Tick at least one Shield to sync", "err");
-  btn.disabled = true;
-  try {
-    track(await api("POST", "settings/sync", {categories: chosenCategories(), devices}), () => compareSettings());
-  } catch (e) { notice(e.message, "err"); btn.disabled = false; }
-}
-
 // ---- tabs -------------------------------------------------------------------------
 function showTab(name) {
   for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", b.dataset.tab === name);
   $("#tab-apps").hidden = name !== "apps";
   $("#tab-shields").hidden = name !== "shields";
   $("#tab-screens").hidden = name !== "screens";
-  $("#tab-settings").hidden = name !== "settings";
   loadScreens();
-  if (name === "settings") loadSettings();
   try { localStorage.setItem("tab", name); } catch {}
 }
 document.querySelector("nav").addEventListener("click", (ev) => {
