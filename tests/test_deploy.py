@@ -125,3 +125,42 @@ def test_uninstall_reports_progress():
 def test_progress_describe_with_message():
     event = deploy.Progress(PKG, deploy.Phase.FAILED, message="no space")
     assert event.describe() == f"Failed {PKG}: no space"
+
+
+class SlowShield(FakeConnection):
+    """A Shield whose package manager and file transfers go quiet for longer than the
+    connection's default 9-second socket timeout, as a real install often does."""
+
+    QUIET_S = 30
+
+    def _check(self, kwargs):
+        timeout = kwargs.get("transport_timeout_s") or 9.0
+        if timeout < self.QUIET_S:
+            raise TimeoutError(f"Reading from 10.10.20.11:5555 timed out ({timeout} seconds)")
+
+    def shell(self, command, **kwargs):
+        if command.startswith(("pm install", "pm install-commit")):
+            self._check(kwargs)
+        return super().shell(command, **kwargs)
+
+    def push(self, local_path, device_path, **kwargs):
+        self._check(kwargs)
+        return super().push(local_path, device_path, **kwargs)
+
+    def pull(self, device_path, local_path, **kwargs):
+        self._check(kwargs)
+        return super().pull(device_path, local_path, **kwargs)
+
+
+def test_slow_install_does_not_hit_the_socket_timeout(tmp_path):
+    conn = SlowShield()
+    apk = make_apk(tmp_path / "app.apk", PKG, 42)
+    assert deploy.install(conn, apk, PKG, 42).version_code == 42
+
+
+def test_slow_split_install_and_pull_do_not_hit_the_socket_timeout(tmp_path):
+    source = SlowShield(installed={PKG: (42, "")}, splits={PKG: ["split_config.en.apk"]})
+    paths = deploy.pull_app(source, PKG, tmp_path / "pulled")
+    target = SlowShield()
+    deploy.install(target, paths, PKG, 42)
+    assert target.installed[PKG] == (42, "")

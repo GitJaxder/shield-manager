@@ -13,6 +13,11 @@ from typing import Protocol
 REMOTE_TMP_DIR = "/data/local/tmp"
 # Installing a large APK on a Shield can take well over the default shell timeout.
 INSTALL_TIMEOUT_S = 300.0
+# adb-shell gives up when the socket is silent for transport_timeout_s, whatever
+# read_timeout_s says, and the connection's default is only a few seconds. A Shield sends
+# nothing while pm installs an app or while it writes a large file, so every long step
+# raises both limits.
+_LONG = {"transport_timeout_s": INSTALL_TIMEOUT_S, "read_timeout_s": INSTALL_TIMEOUT_S}
 
 
 class Connection(Protocol):
@@ -133,13 +138,11 @@ def install(
         raise DeployError("no APK files given")
     remotes = [f"{REMOTE_TMP_DIR}/{package}.{i}.apk" for i in range(len(paths))]
     flags = "-r -d" if allow_downgrade else "-r"
-    long_op = {"read_timeout_s": INSTALL_TIMEOUT_S, "timeout_s": INSTALL_TIMEOUT_S}
+    long_op = {**_LONG, "timeout_s": INSTALL_TIMEOUT_S}
     try:
         copy = _Transfer(package, Phase.COPYING, _local_size(paths), progress)
         for local, remote in zip(paths, remotes, strict=True):
-            conn.push(
-                str(local), remote, read_timeout_s=INSTALL_TIMEOUT_S, progress_callback=copy.chunk
-            )
+            conn.push(str(local), remote, progress_callback=copy.chunk, **_LONG)
         progress(Progress(package, Phase.INSTALLING))
         if len(paths) == 1:
             out = _shell(conn, f"pm install {flags} {shlex.quote(remotes[0])}", **long_op)
@@ -165,7 +168,7 @@ def _install_session(
 ) -> str:
     """Install split APKs together through a pm install session."""
     total = sum(p.stat().st_size for p in paths)
-    created = _shell(conn, f"pm install-create {flags} -S {total}")
+    created = _shell(conn, f"pm install-create {flags} -S {total}", **long_op)
     match = re.search(r"\[(\d+)\]", created)
     if not match:
         return created
@@ -173,7 +176,9 @@ def _install_session(
     for i, (local, remote) in enumerate(zip(paths, remotes, strict=True)):
         size = local.stat().st_size
         out = _shell(
-            conn, f"pm install-write -S {size} {session} {i}_{local.name} {shlex.quote(remote)}"
+            conn,
+            f"pm install-write -S {size} {session} {i}_{local.name} {shlex.quote(remote)}",
+            **long_op,
         )
         if "Success" not in out:
             _shell(conn, f"pm install-abandon {session}")
@@ -236,9 +241,7 @@ def pull_app(
     local_paths = []
     for remote in remotes:
         local = dest_dir / Path(remote).name
-        conn.pull(
-            remote, str(local), read_timeout_s=INSTALL_TIMEOUT_S, progress_callback=download.chunk
-        )
+        conn.pull(remote, str(local), progress_callback=download.chunk, **_LONG)
         local_paths.append(local)
     return local_paths
 
