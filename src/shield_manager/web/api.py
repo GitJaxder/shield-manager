@@ -122,6 +122,11 @@ class Api:
         self._meta_failed: dict[str, int] = {}
         self._screens: dict[str, dict] = {}  # device name -> latest capture
         self._screen_locks: dict[str, threading.Lock] = {}
+        # Newer versions online (GitHub, APKPure) from the last check, by package.
+        self._online: dict[str, fleet.Update] = {}
+        self._online_errors: dict[str, str] = {}
+        self._online_checked: float | None = None
+        self._online_job: Job | None = None
 
     # -- helpers -------------------------------------------------------------------------
 
@@ -555,6 +560,101 @@ class Api:
 
     def list_jobs(self) -> list[dict]:
         return [j.to_dict() for j in self.jobs.list()]
+
+    # -- updates online ------------------------------------------------------------------
+
+    def _downloads_on(self) -> Downloader:
+        if self.downloads is None:
+            raise ApiError(HTTPStatus.CONFLICT, "downloads are turned off for this server")
+        return self.downloads
+
+    def online_updates(self) -> dict:
+        """The last check for newer versions on GitHub and APKPure."""
+        job = self._online_job
+        return {
+            "enabled": self.downloads is not None,
+            "checked": self._online_checked,
+            "checking": job.id if job and job.state == "running" else None,
+            "updates": {
+                u.package: {
+                    "installed": u.installed_name,
+                    "latest": u.latest_name,
+                    "source": u.source,
+                    "shields": u.shields,
+                }
+                for u in self._online.values()
+            },
+            "errors": self._online_errors,
+        }
+
+    def check_online_updates(self) -> dict:
+        """Start a check of every installed app against GitHub and APKPure."""
+        downloads = self._downloads_on()
+        job = self._online_job
+        if job and job.state == "running":
+            return job.to_dict()  # one check at a time; the page follows the running one
+
+        def work(job: Job) -> None:
+            job.progress = "Checking GitHub and APKPure for newer versions"
+            updates, errors = fleet.check_updates(self.registry.list(), self.connect, downloads)
+            self._online = {u.package: u for u in updates}
+            self._online_errors, self._online_checked = errors, time.time()
+            job.progress = ""
+            job.results.append({"ok": True, "updates": len(updates)})
+
+        self._online_job = self.jobs.start("Check for updates online", work)
+        return self._online_job.to_dict()
+
+    def install_online_updates(self, body: dict) -> dict:
+        """Install the newer online version of apps on every Shield that has them."""
+        downloads = self._downloads_on()
+        packages = self._packages(body)
+        updates = [self._online[p] for p in packages if p in self._online]
+        if not updates:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "no update online for those apps; check again")
+
+        def work(job: Job) -> None:
+            steps = {
+                (u.package, name): job.add_step(u.package, self._label(u.package), name, u.source)
+                for u in updates
+                for name in u.shields
+            }
+
+            def report(event: Any) -> None:
+                step = steps.get((event.package, event.device))
+                if step:
+                    _step_reporter([step])(event)
+
+            devices = self.registry.list()
+            for update in updates:
+                job.progress = f"Updating {self._label(update.package)}"
+                update.applied.clear()
+                update.failed.clear()  # from an earlier try
+                try:
+                    fleet.apply_updates([update], devices, self.connect, downloads, progress=report)
+                except Exception as e:
+                    update.failed.update({n: _err(e) for n in update.shields})
+                for name in update.shields:
+                    error = update.failed.get(name)
+                    if error is None and name not in update.applied:
+                        error = "not updated"
+                    steps[(update.package, name)].update(
+                        DONE if error is None else FAILED, error=error
+                    )
+                    job.results.append(
+                        {
+                            "package": update.package,
+                            "device": name,
+                            "ok": error is None,
+                            "error": error,
+                        }
+                    )
+                if not update.failed:
+                    self._online.pop(update.package, None)
+            job.progress = ""
+
+        what = self._label(updates[0].package) if len(updates) == 1 else f"{len(updates)} apps"
+        return self.jobs.start(f"Update {what} from online", work).to_dict()
 
     def open_store_page(self, body: dict) -> dict:
         """Open an app's Play Store page on one Shield's screen, ready to press Install."""

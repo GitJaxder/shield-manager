@@ -50,6 +50,8 @@
   .banner { display: flex; gap: 12px; align-items: center; background: var(--warn-soft);
     border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
   .banner.ok { background: var(--accent-soft); }
+  .banner.stack { flex-direction: column; align-items: stretch; }
+  .banner.stack .actions { justify-content: flex-start; }
   .banner p { margin: 0; flex: 1; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
   @media (max-width: 520px) { .grid { grid-template-columns: 1fr; gap: 8px; } }
@@ -191,6 +193,7 @@
   <div id="selbar" hidden>
     <div class="inner">
       <span class="count" id="sel-count">0 selected</span>
+      <button class="btn small primary" id="sel-update" hidden>Update</button>
       <button class="btn small primary" id="sel-sync">Sync</button>
       <button class="btn small danger" id="sel-remove">Remove…</button>
       <button class="btn small" id="sel-all">Select all</button>
@@ -253,7 +256,8 @@
 <script>
 // Every URL is relative so the page works behind a path prefix (e.g. Home Assistant ingress).
 const $ = (s, el = document) => el.querySelector(s);
-const state = { catalog: null, devices: [], filter: "all", q: "", selected: new Set(), shown: [] };
+const state = { catalog: null, devices: [], filter: "all", q: "", selected: new Set(), shown: [],
+  online: {enabled: false, updates: {}, checked: null, checking: null} };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -413,6 +417,7 @@ function track(job) {
       draw(j);
       if (j.state === "running") return setTimeout(poll, 700);
       loadCatalog();
+      loadOnline();
       if (!j.results.some((r) => !r.ok) && !j.error) setTimeout(() => el.remove(), 8000);
     } catch (e) { setTimeout(poll, 3000); }
   };
@@ -451,9 +456,11 @@ function tile(app, cls = "icon") {
 
 function statusLine(app) {
   const st = liveStep(app.package);
-  if (st) return `<span class="live">${esc(stageText(st))}${st.stage === "installing" ? ` on ${esc(st.device)}` : ""}</span>`;
+  if (st) return `<span class="live">${esc(stageText(st))}</span>`;
   const {missing, older} = appState(app);
-  if (missing.length) return `<span class="warn">Not on ${esc(missing.join(", "))}</span>`;
+  const up = state.online.updates[app.package];
+  if (missing.length) return `<span class="warn">Not on ${esc(missing.join(", "))}${up ? ` · update ${esc(up.latest)} online` : ""}</span>`;
+  if (up) return `<span class="warn">Update available: ${esc(up.installed)} → ${esc(up.latest)}</span>`;
   if (older.length) return `<span class="warn">Update on ${esc(older.join(", "))}</span>`;
   return `<span class="ok">On every Shield</span>`;
 }
@@ -476,7 +483,7 @@ function renderApps() {
   const q = state.q.trim().toLowerCase();
   let apps = cat.apps.filter((a) => !q || (a.label || "").toLowerCase().includes(q) || a.package.toLowerCase().includes(q));
   if (state.filter === "missing") apps = apps.filter((a) => appState(a).missing.length);
-  if (state.filter === "updates") apps = apps.filter((a) => appState(a).older.length);
+  if (state.filter === "updates") apps = apps.filter((a) => appState(a).older.length || state.online.updates[a.package]);
   apps.sort((a, b) => (a.label || a.package).localeCompare(b.label || b.package, undefined, {sensitivity: "base"}));
   state.shown = apps.map((a) => a.package);
   const known = new Set(cat.apps.map((a) => a.package));
@@ -508,12 +515,88 @@ function renderApps() {
     parts.push(`<div class="banner ok"><p>Every Shield matches ${esc(cat.reference)}.</p></div>`);
   }
   for (const s of offline) parts.push(`<div class="banner"><p class="err">Can't reach ${esc(s.name)}: ${esc(s.error)}</p></div>`);
+  parts.push(onlineBanner());
   $("#sync-banner").innerHTML = parts.join("");
+  wireOnlineBanner();
   const sync = $("#sync-now");
   if (sync) sync.onclick = async () => {
     sync.disabled = true;
     try { track(await api("POST", "sync", {})); } catch (e) { notice(e.message, "err"); sync.disabled = false; }
   };
+}
+
+// ---- updates online (GitHub, APKPure) ----------------------------------------------
+const CHECK_EVERY = 6 * 3600;  // seconds; an older check is redone when the page opens
+
+function ago(t) {
+  const m = Math.round((Date.now() / 1000 - t) / 60);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h} hour${h === 1 ? "" : "s"} ago` : `${Math.round(h / 24)} days ago`;
+}
+
+function onlineBanner() {
+  const o = state.online;
+  if (!o.enabled) return "";
+  const pkgs = Object.keys(o.updates);
+  const when = o.checking ? "Checking for updates online…" : o.checked ? `Checked online ${ago(o.checked)}` : "";
+  const again = o.checking ? "" : `<button class="btn small" id="online-check">${o.checked ? "Check again" : "Check now"}</button>`;
+  if (pkgs.length) {
+    const names = pkgs.map(appLabel);
+    const list = names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ");
+    return `<div class="banner stack"><p><strong>${plural(pkgs.length, "update")} available online</strong>: ${esc(list)}.<br><small>${esc(when)}</small></p>
+      <div class="actions">${again}<button class="btn primary" id="online-all">Update all</button></div></div>`;
+  }
+  // Only worth a line on the Updates filter when there's nothing new.
+  if (state.filter !== "updates" || !when) return "";
+  return `<div class="banner ok"><p>${o.checked && !o.checking ? "Every app is up to date online." : ""} <small>${esc(when)}</small></p>${again}</div>`;
+}
+
+function wireOnlineBanner() {
+  const check = $("#online-check");
+  if (check) check.onclick = () => checkOnline();
+  const all = $("#online-all");
+  if (all) all.onclick = () => installOnline(Object.keys(state.online.updates), all);
+}
+
+async function loadOnline() {
+  try { state.online = await api("GET", "online-updates"); } catch (e) { return; }
+  const o = state.online;
+  if (o.checking) followCheck(o.checking);
+  else if (o.enabled && (!o.checked || Date.now() / 1000 - o.checked > CHECK_EVERY)) return checkOnline();
+  renderApps();
+}
+
+async function checkOnline() {
+  try {
+    const job = await api("POST", "online-updates/check");
+    state.online.checking = job.id;
+    renderApps();
+    followCheck(job.id);
+  } catch (e) { notice(e.message); }
+}
+
+// Checks run quietly in the background; the banner says when they finish.
+async function followCheck(id) {
+  try {
+    const j = await api("GET", "jobs/" + id);
+    if (j.state === "running") return setTimeout(() => followCheck(id), 1500);
+    if (j.state === "failed") notice(`Couldn't check for updates online: ${j.error || "unknown error"}`);
+  } catch (e) { return setTimeout(() => followCheck(id), 3000); }
+  loadOnline();
+}
+
+async function installOnline(packages, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    track(await api("POST", "online-updates/install", {packages}));
+    return true;
+  } catch (e) {
+    notice(e.message);
+    if (btn) btn.disabled = false;
+    return false;
+  }
 }
 
 let metaTimer = null;
@@ -619,6 +702,9 @@ function renderSelbar() {
   const n = state.selected.size;
   $("#selbar").hidden = !n;
   $("#sel-count").textContent = `${n} selected`;
+  const ups = [...state.selected].filter((p) => state.online.updates[p]);
+  $("#sel-update").hidden = !ups.length;
+  $("#sel-update").textContent = ups.length === n ? "Update" : `Update ${ups.length}`;
   const allShown = state.shown.length && state.shown.every((p) => state.selected.has(p));
   $("#sel-all").textContent = allShown ? "Clear" : "Select all";
 }
@@ -628,6 +714,13 @@ $("#sel-all").onclick = () => {
   const allShown = state.shown.every((p) => state.selected.has(p));
   for (const p of state.shown) allShown ? state.selected.delete(p) : state.selected.add(p);
   renderApps();
+};
+
+$("#sel-update").onclick = async () => {
+  // Installs the newer online version of each selected app that has one.
+  const packages = [...state.selected].filter((p) => state.online.updates[p]);
+  if (await installOnline(packages, $("#sel-update"))) clearSelection();
+  $("#sel-update").disabled = false;
 };
 
 $("#sel-sync").onclick = async () => {
@@ -841,6 +934,7 @@ try { saved = localStorage.getItem("tab") || "apps"; } catch {}
 showTab(saved);
 loadDevices().catch((e) => notice(e.message, "err"));
 loadCatalog();
+loadOnline();
 api("GET", "jobs").then((jobs) => jobs.filter((j) => j.state === "running").forEach(track)).catch(() => {});
 </script>
 </body>
