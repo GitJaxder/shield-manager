@@ -348,6 +348,16 @@ function stageText(st) {
   return st.stage;
 }
 
+// The fallbacks after a Shield copy and GitHub: an APKMirror page, then a Google search,
+// then the Play Store. The link says which one it is.
+function pageLabel(url) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch (e) { /* not a URL */ }
+  if (/(^|\.)google\./.test(host)) return "Search Google for the file";
+  if (/(^|\.)apkmirror\.com$/.test(host)) return "Open on APKMirror";
+  return "Open download page";
+}
+
 function stepRow(st) {
   const active = ACTIVE.has(st.stage);
   let bar = "";
@@ -361,9 +371,9 @@ function stepRow(st) {
     <div class="pbar ${bar}"><i style="width:${width}%${bar === "ind" ? `;animation-delay:-${(Date.now() % 1200) / 1000}s` : ""}"></i></div>
     <small>${esc(stageText(st))}</small>
     ${st.stage === "failed" && st.store ? `<div class="fixes">
-      <button class="store" data-store="${esc(st.package)}" data-device="${esc(st.device)}">Open in Play Store on ${esc(st.device)}</button>
-      ${/^https:\/\//.test(st.download_page || "") ? `<a class="store alt" href="${esc(st.download_page)}" target="_blank" rel="noopener noreferrer">Open download page</a>` : ""}
-    </div>${st.download_page ? `<small>Or download the file for ${esc(st.device)} and upload it on the Shields tab.</small>` : ""}` : ""}</div>`;
+      ${/^https:\/\//.test(st.download_page || "") ? `<a class="store" href="${esc(st.download_page)}" target="_blank" rel="noopener noreferrer">${pageLabel(st.download_page)}</a>` : ""}
+      <button class="store${st.download_page ? " alt" : ""}" data-store="${esc(st.package)}" data-device="${esc(st.device)}">Open in Play Store on ${esc(st.device)}</button>
+    </div>${st.download_page ? `<small>Download the file for ${esc(st.device)} and upload it on the Shields tab, or use the Play Store as a last resort.</small>` : ""}` : ""}</div>`;
 }
 
 // Opens the app's Play Store page on that Shield's TV, so one press of Install finishes it.
@@ -737,8 +747,8 @@ function elsewhere(app) {
   const pick = online.find((s) => !(s.name in app.versions))?.name;  // a Shield without it
   return `<div class="elsewhere"><strong style="font-size:14px">Get it another way</strong>
     <div class="fixes"><select id="elsewhere-shield" aria-label="Shield">${online.map((s) => `<option${s.name === pick ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
-      <button class="btn small" data-store="${esc(app.package)}">Open in Play Store</button>
-      ${state.online.enabled ? `<button class="btn small" data-find-page="1">Find download page</button>` : ""}</div>
+      ${state.online.enabled ? `<button class="btn small" data-find-page="1">Find download page</button>` : ""}
+      <button class="btn small" data-store="${esc(app.package)}">Open in Play Store</button></div>
     <div id="elsewhere-out" class="muted" style="font-size:13px"></div></div>`;
 }
 
@@ -750,7 +760,7 @@ async function findDownloadPage(btn, pkg) {
   try {
     const r = await api("GET", `download-page?${new URLSearchParams({package: pkg, device})}`);
     if (!/^https:\/\//.test(r.url)) throw new Error("no download page found");
-    out.innerHTML = `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open the download page${r.version ? ` for version ${esc(r.version)}` : ""}</a>, then upload the file on the Shields tab.`;
+    out.innerHTML = `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${pageLabel(r.url)}${r.version ? ` (version ${esc(r.version)})` : ""}</a>, then upload the file on the Shields tab.`;
   } catch (e) { out.textContent = e.message; }
   btn.disabled = false;
 }
