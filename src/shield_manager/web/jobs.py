@@ -12,11 +12,12 @@ from typing import Any
 MAX_FINISHED_JOBS = 50
 
 # A step's stage, in the order it moves through them.
-QUEUED, DOWNLOADING, COPYING, INSTALLING, DONE, FAILED, SKIPPED = (
+QUEUED, DOWNLOADING, COPYING, INSTALLING, REMOVING, DONE, FAILED, SKIPPED = (
     "queued",
     "downloading",  # pulling the APK off the Shield that has it
     "copying",  # pushing it to the target Shield
     "installing",
+    "removing",  # sync with prune: an app the reference doesn't have
     "done",
     "failed",
     "skipped",  # already up to date
@@ -36,6 +37,7 @@ class Step:
     error: str | None = None
     store: bool = False  # failed because no copy fits; the Play Store page can install it
     download_page: str | None = None  # where to download a build that fits, by hand
+    remove: bool = False  # removes the app instead of installing it
 
     def update(self, stage: str, percent: float | None = None, error: str | None = None) -> None:
         self.stage, self.percent, self.error = stage, percent, error
@@ -51,6 +53,7 @@ class Step:
             "error": self.error,
             "store": self.store,
             "download_page": self.download_page,
+            "remove": self.remove,
         }
 
 

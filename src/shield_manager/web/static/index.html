@@ -128,7 +128,9 @@
   .step-head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .step-head .pct { font-variant-numeric: tabular-nums; opacity: .85; }
   .step small { margin-top: 2px; }
-  .job .fixes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .fixes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; align-items: center; }
+  .elsewhere { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .elsewhere select { font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
   .job .store { font-size: 14px; font-weight: 600; padding: 6px 12px; border-radius: 8px;
     background: var(--accent); color: var(--accent-ink); text-decoration: none; }
   .job .store.alt { background: none; color: inherit; border: 1px solid currentColor; }
@@ -308,7 +310,7 @@ function summarize(job) {
     const ok = steps.filter((x) => x.stage === "done").length;
     const where = listOf(failed.map((x) => x.device));
     return ok
-      ? `${ok} installed, ${failed.length} failed on ${where}`
+      ? `${ok} done, ${failed.length} failed on ${where}`
       : `${failed.length} of ${steps.length} failed on ${where}`;
   }
   const bad = job.results.filter((r) => !r.ok);
@@ -327,17 +329,18 @@ function summarize(job) {
   return done.length ? `Done on ${done.map((r) => r.device).join(", ")}` : "Already up to date";
 }
 
-const STAGE_ORDER = {downloading: 0, copying: 0, installing: 0, queued: 1, failed: 2, done: 3, skipped: 3};
-const ACTIVE = new Set(["downloading", "copying", "installing"]);
+const STAGE_ORDER = {downloading: 0, copying: 0, installing: 0, removing: 0, queued: 1, failed: 2, done: 3, skipped: 3};
+const ACTIVE = new Set(["downloading", "copying", "installing", "removing"]);
 
 function stageText(st) {
   const pct = st.percent == null ? "" : ` – ${Math.round(st.percent)}%`;
   switch (st.stage) {
-    case "queued": return "Waiting";
+    case "queued": return st.remove ? "Waiting to remove" : "Waiting";
+    case "removing": return `Removing ${st.label} from ${st.device}`;
     case "downloading": return `Downloading ${st.label}${st.source ? ` from ${st.source}` : ""}${pct}`;
     case "copying": return `Copying ${st.label} to ${st.device}${pct}`;
     case "installing": return `Installing ${st.label} on ${st.device}`;
-    case "done": return "Installed";
+    case "done": return st.remove ? "Removed" : "Installed";
     case "skipped": return "Already up to date";
     // The CLI hint at the end of the error is for the terminal; the page has a button instead.
     case "failed": return `Failed: ${(st.error || "unknown error").replace(/ \(`shield-manager [^`]*` [^)]*\)/, "")}`;
@@ -368,14 +371,17 @@ async function openStorePage(btn) {
   const device = btn.dataset.device;
   btn.disabled = true;
   btn.textContent = `Opening on ${device}…`;
+  // In the app sheet (a modal over the tray), say it there instead.
+  const out = btn.closest(".elsewhere")?.querySelector("#elsewhere-out");
+  const say = (msg, ms) => (out ? (out.textContent = msg) : notice(msg, "", ms));
   try {
     await api("POST", "store-page", {package: btn.dataset.store, device});
-    notice(`Opened the Play Store on ${device}. Press Install with the remote.`, "", 8000);
+    say(`Opened the Play Store on ${device}. Press Install with the remote.`, 8000);
   } catch (e) {
-    notice(`Couldn't open the Play Store on ${device}: ${e.message}`);
+    say(`Couldn't open the Play Store on ${device}: ${e.message}`);
   }
   btn.disabled = false;
-  btn.textContent = `Open in Play Store on ${device}`;
+  btn.textContent = out ? "Open in Play Store" : `Open in Play Store on ${device}`;
 }
 
 // Live install stages per app, so cards can say "Installing on den" while a job runs.
@@ -510,12 +516,17 @@ function renderApps() {
 
   const offline = cat.shields.filter((s) => !s.ok);
   const behind = cat.shields.filter((s) => s.drift && (s.drift.install || s.drift.update));
+  const differ = cat.shields.filter((s) => s.drift && (s.drift.newer || s.drift.extra));
   const parts = [];
   if (!cat.reference) parts.push(`<div class="banner"><p>Pick a reference Shield on the Shields tab so the others can mirror it.</p></div>`);
   else if (behind.length) {
     const n = behind.reduce((t, s) => t + s.drift.install + s.drift.update, 0);
     parts.push(`<div class="banner"><p><strong>${behind.map((s) => esc(s.name)).join(", ")}</strong> ${behind.length > 1 ? "are" : "is"} missing ${n} app${n > 1 ? "s" : ""} or update${n > 1 ? "s" : ""} from ${esc(cat.reference)}.</p>
       <button class="btn primary" id="sync-now">Sync now</button></div>`);
+  } else if (differ.length) {
+    const n = differ.reduce((t, s) => t + s.drift.newer + s.drift.extra, 0);
+    parts.push(`<div class="banner ok"><p>Every Shield has ${esc(cat.reference)}'s apps. ${plural(n, "app")} on ${differ.map((s) => esc(s.name)).join(", ")} ${n === 1 ? "is" : "are"} newer or not on ${esc(cat.reference)}.</p>
+      <button class="btn" id="sync-now">Review</button></div>`);
   } else if (cat.shields.length > 1 && !offline.length) {
     parts.push(`<div class="banner ok"><p>Every Shield matches ${esc(cat.reference)}.</p></div>`);
   }
@@ -524,10 +535,102 @@ function renderApps() {
   $("#sync-banner").innerHTML = parts.join("");
   wireOnlineBanner();
   const sync = $("#sync-now");
-  if (sync) sync.onclick = async () => {
-    sync.disabled = true;
-    try { track(await api("POST", "sync", {})); } catch (e) { notice(e.message, "err"); sync.disabled = false; }
+  if (sync) sync.onclick = openSyncSheet;
+}
+
+// ---- sync sheet (fleet status / sync) ------------------------------------------------
+function names(pkgs, max = 6) {
+  const all = pkgs.map(appLabel);
+  return esc(all.length > max ? `${all.slice(0, max).join(", ")} and ${all.length - max} more` : all.join(", "));
+}
+
+function openSyncSheet() {
+  const cat = state.catalog;
+  const ref = cat.reference;
+  const others = cat.shields.filter((s) => s.name !== ref && s.ok && s.changes);
+  const sum = (key) => others.reduce((t, s) => t + s.changes[key].length, 0);
+  const rows = others.map((s) => {
+    const c = s.changes;
+    const lines = [];
+    if (c.install.length) lines.push(`Install ${c.install.length}: ${names(c.install)}`);
+    if (c.update.length) lines.push(`Update ${c.update.length}: ${names(c.update)}`);
+    if (c.newer.length) lines.push(`<span class="muted">Newer than on ${esc(ref)}: ${names(c.newer)}</span>`);
+    if (c.extra.length) lines.push(`<span class="muted">Not on ${esc(ref)}: ${names(c.extra)}</span>`);
+    const busy = c.install.length + c.update.length + c.newer.length + c.extra.length;
+    return `<label class="row" style="align-items:flex-start"><input type="checkbox" name="sync-target" value="${esc(s.name)}"${c.install.length || c.update.length ? " checked" : ""}>
+      <div class="grow"><strong>${esc(s.name)}</strong><div style="font-size:13px">${busy ? lines.join("<br>") : '<span class="ok">Matches</span>'}</div></div></label>`;
+  }).join("");
+  const offline = cat.shields.filter((s) => !s.ok).map((s) => s.name);
+  $("#sheet-body").innerHTML = `
+    <div class="sheet-head"><div style="min-width:0"><h2>Sync from ${esc(ref)}</h2>
+      <div class="muted" style="font-size:14px">Copies missing and older apps from ${esc(ref)} to the Shields you tick.</div></div>
+      <button class="close" aria-label="Close">×</button></div>
+    <div class="rows">${rows || '<p class="muted">No other Shields are online.</p>'}</div>
+    ${offline.length ? `<p class="err" style="font-size:13px">Offline, skipped: ${esc(offline.join(", "))}</p>` : ""}
+    <div class="checks" style="flex-direction:column;margin:12px 0">
+      ${sum("newer") ? `<label><input type="checkbox" name="downgrade"> Also downgrade ${plural(sum("newer"), "app")} that ${sum("newer") === 1 ? "is" : "are"} newer than on ${esc(ref)}</label>` : ""}
+      ${sum("extra") ? `<label><input type="checkbox" name="prune"> Also remove ${plural(sum("extra"), "app")} ${esc(ref)} doesn't have <span class="err">(deletes their data)</span></label>` : ""}
+      ${state.online.enabled ? `<label><input type="checkbox" name="downloads" checked> Download from GitHub when no Shield has a copy that fits</label>` : ""}
+    </div>
+    <button class="btn primary" id="confirm-sync" style="width:100%">Sync</button>`;
+  const sheet = $("#sheet");
+  const body = $("#sheet-body");
+  const picked = () => [...body.querySelectorAll("input[name=sync-target]:checked")].map((i) => i.value);
+  const checked = (n) => !!body.querySelector(`input[name=${n}]`)?.checked;
+  const refresh = () => {
+    const n = picked().length;
+    const b = $("#confirm-sync");
+    b.disabled = !n;
+    b.textContent = n ? `Sync ${plural(n, "Shield")}` : "Pick a Shield";
   };
+  body.onchange = refresh;
+  refresh();
+  body.onclick = async (ev) => {
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.classList.contains("close")) return sheet.close();
+    if (b.id !== "confirm-sync") return;
+    if (checked("prune") && !confirm(`Remove apps ${ref} doesn't have from ${picked().join(", ")}? Their data is deleted.`)) return;
+    b.disabled = true;
+    try {
+      track(await api("POST", "sync", {devices: picked(), allow_downgrade: checked("downgrade"), prune: checked("prune"),
+        downloads: state.online.enabled ? checked("downloads") : false}));
+      sheet.close();
+    } catch (e) { notice(e.message, "err"); b.disabled = false; }
+  };
+  sheet.showModal();
+}
+
+// ---- one Shield's apps (app list) -----------------------------------------------------
+async function openDeviceApps(name) {
+  const sheet = $("#sheet");
+  const body = $("#sheet-body");
+  let system = false, packages = [], q = "";
+  const draw = () => {
+    const shown = packages.filter((p) => !q || p.includes(q) || appLabel(p).toLowerCase().includes(q));
+    $("#dev-apps").innerHTML = shown.length
+      ? shown.map((p) => `<div class="row"><div class="grow">${appLabel(p) !== p ? `<strong>${esc(appLabel(p))}</strong><div class="pkg">${esc(p)}</div>` : `<span class="pkg">${esc(p)}</span>`}</div></div>`).join("")
+      : `<p class="muted">${packages.length ? "No apps match." : "No apps."}</p>`;
+    $("#dev-apps-count").textContent = `${plural(packages.length, system ? "app" : "app")}${system ? ", including system apps" : ""}`;
+  };
+  const load = async () => {
+    $("#dev-apps").innerHTML = '<p class="muted">Reading apps…</p>';
+    try {
+      packages = (await api("GET", `devices/${encodeURIComponent(name)}/apps${system ? "?system=1" : ""}`)).packages;
+      draw();
+    } catch (e) { $("#dev-apps").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  };
+  body.innerHTML = `
+    <div class="sheet-head"><div style="min-width:0"><h2>Apps on ${esc(name)}</h2><div class="muted" style="font-size:14px" id="dev-apps-count"></div></div>
+      <button class="close" aria-label="Close">×</button></div>
+    <div class="search" style="margin-bottom:8px"><input type="search" id="dev-apps-q" placeholder="Search" aria-label="Search apps on ${esc(name)}"></div>
+    <label class="muted"><input type="checkbox" id="dev-apps-system"> Include system apps</label>
+    <div class="rows" id="dev-apps" style="margin-top:8px"></div>`;
+  body.onclick = (ev) => { if (ev.target.closest(".close")) sheet.close(); };
+  body.onchange = (ev) => { if (ev.target.id === "dev-apps-system") { system = ev.target.checked; load(); } };
+  $("#dev-apps-q").oninput = (ev) => { q = ev.target.value.trim().toLowerCase(); draw(); };
+  sheet.showModal();
+  load();
 }
 
 // ---- updates online (GitHub) -----------------------------------------------------
@@ -627,6 +730,31 @@ async function pollMeta() {
   } catch { metaTimer = setTimeout(pollMeta, 5000); }
 }
 
+// Other ways to get an app onto a Shield: its Play Store page on the TV, or a download page.
+function elsewhere(app) {
+  const online = state.catalog.shields.filter((s) => s.ok);
+  if (!online.length) return "";
+  const pick = online.find((s) => !(s.name in app.versions))?.name;  // a Shield without it
+  return `<div class="elsewhere"><strong style="font-size:14px">Get it another way</strong>
+    <div class="fixes"><select id="elsewhere-shield" aria-label="Shield">${online.map((s) => `<option${s.name === pick ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select>
+      <button class="btn small" data-store="${esc(app.package)}">Open in Play Store</button>
+      ${state.online.enabled ? `<button class="btn small" data-find-page="1">Find download page</button>` : ""}</div>
+    <div id="elsewhere-out" class="muted" style="font-size:13px"></div></div>`;
+}
+
+async function findDownloadPage(btn, pkg) {
+  const device = $("#elsewhere-shield").value;
+  const out = $("#elsewhere-out");
+  btn.disabled = true;
+  out.textContent = `Looking for the build for ${device}…`;
+  try {
+    const r = await api("GET", `download-page?${new URLSearchParams({package: pkg, device})}`);
+    if (!/^https:\/\//.test(r.url)) throw new Error("no download page found");
+    out.innerHTML = `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open the download page${r.version ? ` for version ${esc(r.version)}` : ""}</a>, then upload the file on the Shields tab.`;
+  } catch (e) { out.textContent = e.message; }
+  btn.disabled = false;
+}
+
 function openApp(pkg) {
   const app = state.catalog.apps.find((a) => a.package === pkg);
   if (!app) return;
@@ -655,12 +783,18 @@ function openApp(pkg) {
       <button class="close" aria-label="Close">×</button></div>
     ${targets.length > 1 ? `<button class="btn primary" style="width:100%;margin-bottom:12px" data-install="${esc(targets.join(","))}">Install on all ${targets.length} Shields that need it</button>` : ""}
     <div class="rows">${rows}</div>
-    <p class="muted" style="font-size:13px;margin:12px 0 0">Installs copy the app from a Shield that already has the newest version. Removing an app deletes its data on that Shield.</p>`;
+    <p class="muted" style="font-size:13px;margin:12px 0 0">Installs copy the app from a Shield that already has the newest version. Removing an app deletes its data on that Shield.</p>
+    ${elsewhere(app)}`;
   const sheet = $("#sheet");
   $("#sheet-body").onclick = async (ev) => {
     const b = ev.target.closest("button");
     if (!b) return;
     if (b.classList.contains("close")) return sheet.close();
+    if (b.dataset.store) {
+      b.dataset.device = $("#elsewhere-shield").value;
+      return openStorePage(b);
+    }
+    if (b.dataset.findPage) return findDownloadPage(b, pkg);
     if (b.dataset.install) {
       b.disabled = true;
       try {
@@ -804,6 +938,7 @@ function renderDevices() {
       <div class="actions">
         ${d.reference ? "" : '<button class="btn small" data-act="ref">Make reference</button>'}
         <button class="btn small" data-act="info">Check</button>
+        <button class="btn small" data-act="apps">Apps</button>
         <button class="btn small" data-act="groups">Groups</button>
         <button class="btn small danger" data-act="remove">Remove</button>
       </div></div>`).join("")
@@ -832,6 +967,8 @@ $("#devices").addEventListener("click", async (ev) => {
     run(async () => { await api("DELETE", path); await loadDevices(); loadCatalog(); });
   } else if (b.dataset.act === "ref") {
     run(async () => { await api("PUT", "reference", {name}); await loadDevices(); loadCatalog(); });
+  } else if (b.dataset.act === "apps") {
+    openDeviceApps(name);
   } else if (b.dataset.act === "groups") {
     const d = state.devices.find((x) => x.name === name);
     const input = prompt(`Groups for ${name}, separated by commas`, d.groups.join(", "));

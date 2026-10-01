@@ -34,6 +34,7 @@ from shield_manager.web.jobs import (
     DOWNLOADING,
     FAILED,
     INSTALLING,
+    REMOVING,
     Job,
     Jobs,
     Step,
@@ -251,9 +252,12 @@ class Api:
             if inv["ok"] and ref_versions is not None and d.name != reference:
                 drift = fleet.compare(ref_versions, inv["result"])
                 counts = {c.value: 0 for c in fleet.Change}
+                changes: dict[str, list[str]] = {c.value: [] for c in fleet.Change}
                 for item in drift:
                     counts[item.change.value] += 1
+                    changes[item.change.value].append(item.package)
                 entry["drift"] = counts
+                entry["changes"] = changes  # packages per change, for the sync preview
             shields.append(entry)
 
         cached = self.meta.load()
@@ -354,14 +358,23 @@ class Api:
         meta = self.meta.load().get(package)
         return meta.label if meta and meta.label else package
 
-    def _copy_apps(self, job: Job, plan: list[tuple[str, list[str], int, list[Device]]]) -> None:
+    def _copy_apps(
+        self,
+        job: Job,
+        plan: list[tuple[str, list[str], int, list[Device]]],
+        downloads: Downloader | None | str = "server",
+        allow_downgrade: bool = False,
+    ) -> None:
         """Copy each (package, source Shields, versionCode, targets) in plan, step by step.
 
         Sources are Shields holding that version, preferred first. Each target tries them in
         the best order for its CPU types (fleet.source_order), with GitHub downloads
         before Shields whose copy it likely can't run. Every app/Shield pair gets a
-        progress step up front, so the page shows the whole queue.
+        progress step up front, so the page shows the whole queue. downloads defaults to the
+        server's; None copies between Shields only.
         """
+        if downloads == "server":
+            downloads = self.downloads
         names = {
             n for _, sources, _, devices in plan for n in [*sources, *(d.name for d in devices)]
         }
@@ -375,7 +388,7 @@ class Api:
 
         def ordered(package: str, sources: list[str], device: Device) -> list[str]:
             target = abis.get(device.name, [])
-            return fleet.source_order(sources, target, abis, package, self.downloads)
+            return fleet.source_order(sources, target, abis, package, downloads)
 
         steps = {
             (package, device.name): job.add_step(
@@ -390,7 +403,7 @@ class Api:
             try:
                 with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
                     fetcher = fleet.Fetcher(
-                        package, version, sources, self._pull, Path(tmp), self.downloads
+                        package, version, sources, self._pull, Path(tmp), downloads
                     )
                     for device, step in zip(devices, mine, strict=True):
                         job.progress = f"Installing {label} on {device.name}"
@@ -400,7 +413,13 @@ class Api:
                             device,
                             lambda c, p=package, v=version, o=order, f=fetch, st=step: asdict(
                                 fleet.install_first_compatible(
-                                    c, p, v, o, f, progress=_step_reporter([st])
+                                    c,
+                                    p,
+                                    v,
+                                    o,
+                                    f,
+                                    progress=_step_reporter([st]),
+                                    allow_downgrade=allow_downgrade,
                                 )[0]
                             ),
                         )
@@ -520,7 +539,15 @@ class Api:
         return {"apk": asdict(info), **self.jobs.start(title, work).to_dict()}
 
     def sync(self, body: dict) -> dict:
-        """Bring Shields up to date with the reference. Never removes apps."""
+        """Bring Shields up to date with the reference, like `fleet sync`.
+
+        Takes optional "devices", "allow_downgrade" (also downgrade apps newer than on the
+        reference), "prune" (also remove apps the reference doesn't have, deleting their
+        data) and "downloads" (false: copy between Shields only, never from GitHub).
+        """
+        allow_downgrade = bool(body.get("allow_downgrade"))
+        prune = bool(body.get("prune"))
+        downloads = "server" if body.get("downloads", True) else None
         reference_name = self.registry.reference
         if not reference_name:
             raise ApiError(HTTPStatus.BAD_REQUEST, "choose a reference Shield first")
@@ -536,6 +563,9 @@ class Api:
             chosen = {d.name for d in targets}
             reports = [r for r in everyone if r.device.name in chosen]
             wanted = {fleet.Change.INSTALL, fleet.Change.UPDATE}
+            if allow_downgrade:
+                wanted.add(fleet.Change.NEWER)
+            extras: list[tuple[str, Device]] = []
             by_package: dict[str, tuple[int, list[Device]]] = {}
             # Shields already on the reference's version can stand in for it as a source.
             drifted = {r.device.name: {d.package for d in r.drift} for r in everyone if not r.error}
@@ -546,6 +576,8 @@ class Api:
                     )
                     continue
                 for d in report.drift:
+                    if prune and d.change == fleet.Change.EXTRA:
+                        extras.append((d.package, report.device))
                     if d.change in wanted:
                         version, devices = by_package.setdefault(
                             d.package, (d.reference_version, [])
@@ -563,7 +595,19 @@ class Api:
                 )
                 for package, (version, devices) in sorted(by_package.items())
             ]
-            self._copy_apps(job, plan)
+            removals = [
+                (job.add_step(p, self._label(p), device.name), p, device) for p, device in extras
+            ]
+            for step, _, _ in removals:
+                step.remove = True
+            self._copy_apps(job, plan, downloads, allow_downgrade)
+            for step, package, device in removals:
+                job.progress = f"Removing {step.label} from {device.name}"
+                step.update(REMOVING)
+                result = self._on_device(device, lambda c, p=package: deploy.uninstall(c, p))
+                step.update(DONE if result["ok"] else FAILED, error=result.get("error"))
+                job.results.append({"package": package, **result, "removed": True})
+            job.progress = ""
 
         return self.jobs.start(f"Sync from {reference.name}", work).to_dict()
 
@@ -670,6 +714,40 @@ class Api:
 
         what = self._label(updates[0].package) if len(updates) == 1 else f"{len(updates)} apps"
         return self.jobs.start(f"Update {what} from online", work).to_dict()
+
+    def download_page(self, query: dict[str, list[str]]) -> dict:
+        """A link to a page offering the build of an app that fits a Shield, like
+        `app download-page`. The version is the newest one on any Shield, if any has it."""
+        downloads = self._downloads_on()
+        package = self._packages({"package": (query.get("package") or [""])[0]})[0]
+        target = self._get((query.get("device") or [""])[0])
+        holders = {
+            r["device"]: r["result"][package]
+            for r in self._on_devices(self.registry.list(), deploy.package_versions)
+            if r["ok"] and package in r["result"]
+        }
+        version_name = None
+        if holders:
+            holder = self._get(max(holders, key=holders.get))
+            found = self._on_device(holder, lambda c: deploy.installed_version(c, package))
+            if found["ok"] and found["result"]:
+                version_name = found["result"].version_name or None
+        abis = self._on_device(target, deploy.device_abis)
+        if not abis["ok"]:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, abis["error"])
+        abi = (abis["result"] or ["armeabi-v7a"])[0]
+        url = downloads.download_page(package, version_name, abi)
+        if not url.startswith("https://"):
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "no download page found")
+        return {"package": package, "device": target.name, "version": version_name, "url": url}
+
+    def device_apps(self, name: str, include_system: bool) -> dict:
+        """Every app on one Shield, like `app list`, optionally with system apps."""
+        device = self._get(name)
+        result = self._on_device(device, lambda c: deploy.list_packages(c, include_system))
+        if not result["ok"]:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, result["error"])
+        return {"device": device.name, "system": include_system, "packages": result["result"]}
 
     def open_store_page(self, body: dict) -> dict:
         """Open an app's Play Store page on one Shield's screen, ready to press Install."""

@@ -581,3 +581,59 @@ def test_online_updates_are_checked_then_installed(ui, monkeypatch):
     assert steps == {"den": ("done", None), "living": ("failed", "signed by someone else")}
     # Still offered, since living didn't get it.
     assert "org.xbmc.kodi" in ui("GET", "/api/online-updates")[1]["updates"]
+
+
+def test_catalog_lists_each_change_for_the_sync_preview(ui):
+    living = next(s for s in ui("GET", "/api/catalog")[1]["shields"] if s["name"] == "living")
+    assert living["changes"] == {
+        "install": ["com.plexapp.android"],
+        "update": ["org.xbmc.kodi"],
+        "newer": [],
+        "extra": ["com.retroarch"],
+    }
+
+
+def test_sync_can_prune_and_downgrade(ui):
+    ui.installed["living"]["org.xbmc.kodi"] = (21, "21.0")  # newer than den's 20
+    body = {"allow_downgrade": True, "prune": True, "downloads": False}
+    job = ui.wait_job(ui("POST", "/api/sync", body)[1])
+    assert job["state"] == "done", job
+    steps = {s["package"]: (s["stage"], s["remove"]) for s in job["steps"]}
+    assert steps == {
+        "com.plexapp.android": ("done", False),
+        "org.xbmc.kodi": ("done", False),
+        "com.retroarch": ("done", True),
+    }
+    assert ui.installed["living"]["org.xbmc.kodi"][0] == 20
+    assert "com.retroarch" not in ui.installed["living"]
+
+
+def test_sync_leaves_newer_and_extra_apps_by_default(ui):
+    ui.installed["living"]["org.xbmc.kodi"] = (21, "21.0")
+    job = ui.wait_job(ui("POST", "/api/sync", {})[1])
+    assert [s["package"] for s in job["steps"]] == ["com.plexapp.android"]
+    assert ui.installed["living"]["org.xbmc.kodi"][0] == 21
+    assert "com.retroarch" in ui.installed["living"]
+
+
+def test_device_apps_lists_one_shields_apps(ui):
+    status, body = ui("GET", "/api/devices/living/apps")
+    assert status == 200 and body["packages"] == ["com.retroarch", "org.xbmc.kodi"]
+    assert body["system"] is False
+    assert ui("GET", "/api/devices/living/apps?system=1")[1]["system"] is True
+    assert ui("GET", "/api/devices/nope/apps")[0] == 404
+
+
+def test_download_page_for_an_app_on_a_shield(ui):
+    asked = []
+
+    class Downloads:
+        def download_page(self, package, version_name, abi):
+            asked.append((package, version_name, abi))
+            return "https://www.apkmirror.com/apk/kodi"
+
+    assert ui("GET", "/api/download-page?package=org.xbmc.kodi&device=living")[0] == 409
+    ui.api.downloads = Downloads()
+    status, body = ui("GET", "/api/download-page?package=org.xbmc.kodi&device=living")
+    assert status == 200 and body["url"] == "https://www.apkmirror.com/apk/kodi"
+    assert asked == [("org.xbmc.kodi", "20.0", asked[0][2])]  # den has the newest, 20.0

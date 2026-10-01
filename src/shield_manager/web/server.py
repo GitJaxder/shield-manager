@@ -121,6 +121,10 @@ class Handler(BaseHTTPRequestHandler):
                 return api.check_online_updates()
             case "POST", ["online-updates", "install"]:
                 return api.install_online_updates(self._json_body())
+            case "GET", ["download-page"]:
+                return api.download_page(query)
+            case "GET", ["devices", name, "apps"]:
+                return api.device_apps(name, (query.get("system") or ["0"])[0] == "1")
             case "POST", ["store-page"]:
                 return api.open_store_page(self._json_body())
             case "POST", ["uninstall"]:

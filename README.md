@@ -125,10 +125,17 @@ Shield that already has the newest version. Tick the checkbox on several apps to
 Shields you pick, all at once. A banner offers **Sync now** when Shields have
 fallen behind the reference. Sync never removes apps. The page also checks GitHub for
 newer versions of open-source apps when it opens (at most every 6 hours, or when you press **Check
-again**); apps with one show "Update available: 1.0 → 1.1" and appear under **Updates**.
-Press **Update all** in the banner, or tick apps and press **Update**, to install them as
+again**); apps with one show "Update available: 1.0 → 1.1" and appear under **Updates**. Press **Update all** in the banner, or tick apps and press **Update**, to install them as
 `fleet updates --install` does (see [Checking for updates](#checking-for-updates)). The **Shields** tab adds, groups and
-removes Shields, picks the reference, and installs an APK file you upload.
+removes Shields, picks the reference, checks a connection, lists each Shield's apps (system
+apps too, if you tick the box), and installs an APK file you upload.
+
+**Sync now** opens a preview of what each Shield would get from the reference, like `fleet
+status`. Tick the Shields to sync and, as with `fleet sync`'s options, choose whether to also
+downgrade apps that are newer than on the reference, remove apps the reference doesn't have,
+or download from GitHub. An app's page has **Get it another way**: open its Play Store page
+on a Shield's TV (`app store-page`) or find a download page for that Shield's CPU type
+(`app download-page`).
 
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
 at the bottom shows each app on each Shield moving through Downloading, Copying and Installing,
