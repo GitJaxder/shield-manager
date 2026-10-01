@@ -1,3 +1,4 @@
+import zipfile
 from pathlib import Path
 
 
@@ -6,10 +7,12 @@ class FakeConnection:
 
     APK files used with it contain "package:versionCode" as text, so installs can update
     the simulated device. Entries in responses override the reply to any command that
-    starts with that prefix.
+    starts with that prefix. With abis (CPU types, preferred first), the device reports
+    them and the APKs pulled from it are zips with native code for its first one, the way
+    the Play Store delivers apps.
     """
 
-    def __init__(self, responses=None, installed=None, splits=None):
+    def __init__(self, responses=None, installed=None, splits=None, abis=None):
         self.responses = responses or {}
         self.installed = dict(installed or {})  # package -> (version_code, version_name)
         self.splits = splits or {}  # package -> extra split APK names
@@ -18,13 +21,18 @@ class FakeConnection:
         self.pulled = []
         self.staged = {}  # remote path -> (package, version_code)
         self.closed = False
+        self.abis = list(abis or [])
 
     def push(self, local_path, device_path, progress_callback=None, **kwargs):
         self.pushed.append((local_path, device_path))
         local = Path(local_path)
         if progress_callback and local.exists():
             _report_chunks(progress_callback, device_path, local.stat().st_size)
-        text = local.read_bytes().decode(errors="replace") if local.exists() else ""
+        if local.exists() and zipfile.is_zipfile(local):
+            with zipfile.ZipFile(local) as zf:
+                text = zf.read("stub").decode() if "stub" in zf.namelist() else ""
+        else:
+            text = local.read_bytes().decode(errors="replace") if local.exists() else ""
         if text.count(":") == 1:
             package, code = text.split(":")
             self.staged[device_path] = (package, int(code))
@@ -36,9 +44,14 @@ class FakeConnection:
     def pull(self, device_path, local_path, progress_callback=None, **kwargs):
         self.pulled.append(device_path)
         content = self._remote_content(device_path)
-        Path(local_path).write_text(content)
+        if self.abis:
+            with zipfile.ZipFile(local_path, "w") as zf:
+                zf.writestr("stub", content)
+                zf.writestr(f"lib/{self.abis[0]}/libapp.so", b"\x7fELF")
+        else:
+            Path(local_path).write_text(content)
         if progress_callback:
-            _report_chunks(progress_callback, device_path, len(content))
+            _report_chunks(progress_callback, device_path, Path(local_path).stat().st_size)
 
     def _apply(self, remotes):
         for remote in remotes:
@@ -52,6 +65,8 @@ class FakeConnection:
             if command.startswith(prefix):
                 return response
         args = command.split()
+        if command == "getprop ro.product.cpu.abilist":
+            return ",".join(self.abis)
         if command.startswith("dumpsys package "):
             package = args[-1]
             if package in self.installed:

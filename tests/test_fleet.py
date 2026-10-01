@@ -123,3 +123,45 @@ def test_sync_reports_failures_as_progress(connect, shields):
     fleet.sync(REF, [DEN], connect, progress=events.append)
     [failed] = [e for e in events if e.phase.value == "failed"]
     assert failed.package == "plex" and "INSUFFICIENT_STORAGE" in failed.message
+
+
+ARM64 = ["arm64-v8a", "armeabi-v7a", "armeabi"]
+ARM32 = ["armeabi-v7a", "armeabi"]
+
+
+def _mixed_fleet(attic_has_plex):
+    shields = {
+        REF.name: FakeConnection(installed={"plex": (50, "")}, abis=ARM64),
+        DEN.name: FakeConnection(abis=ARM32),
+        ATTIC.name: FakeConnection(
+            installed={"plex": (50, "")} if attic_has_plex else {}, abis=ARM32
+        ),
+    }
+    return shields, shields.__getitem__
+
+
+def _by_name(device):
+    return device.name
+
+
+def test_sync_copies_from_a_shield_of_the_same_cpu_type():
+    shields, get = _mixed_fleet(attic_has_plex=True)
+    [den, _] = fleet.sync(REF, [DEN, ATTIC], lambda d: get(_by_name(d)))
+    assert den.applied == {"plex": "installed 50 (copied from attic)"}
+    assert shields[DEN.name].installed["plex"][0] == 50
+    assert not shields[REF.name].pulled  # the reference's arm64 copy was never needed
+
+
+def test_sync_reports_an_app_no_shield_has_a_compatible_copy_of():
+    shields, get = _mixed_fleet(attic_has_plex=False)
+    reports = fleet.sync(REF, [DEN, ATTIC], lambda d: get(_by_name(d)))
+    for report in reports:
+        assert "not compatible with this Shield" in report.failed["plex"]
+        assert "Play Store" in report.failed["plex"]
+    assert not shields[DEN.name].pushed  # refused before copying anything
+
+
+def test_rank_sources_prefers_the_same_cpu_types():
+    abis = {"ref": ARM64, "attic": ARM32, "odd": ["x86"]}
+    assert fleet.rank_sources(["ref", "odd", "attic"], ARM32, abis) == ["attic", "ref", "odd"]
+    assert fleet.rank_sources(["attic", "ref"], ARM64, abis) == ["ref", "attic"]

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict
+from functools import partial
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,6 @@ from shield_manager.web.jobs import (
     DOWNLOADING,
     FAILED,
     INSTALLING,
-    QUEUED,
     Job,
     Jobs,
     Step,
@@ -329,35 +329,52 @@ class Api:
         meta = self.meta.load().get(package)
         return meta.label if meta and meta.label else package
 
-    def _copy_apps(self, job: Job, plan: list[tuple[str, str, int, list[Device]]]) -> None:
-        """Copy each (package, source Shield, versionCode, targets) in plan, step by step.
+    def _copy_apps(self, job: Job, plan: list[tuple[str, list[str], int, list[Device]]]) -> None:
+        """Copy each (package, source Shields, versionCode, targets) in plan, step by step.
 
-        Every app/Shield pair gets a progress step up front, so the page shows the whole queue.
+        Sources are Shields holding that version, preferred first. Each target gets the copy
+        from the best source for its CPU types (fleet.rank_sources), falling back to the next
+        when a copy is built for a CPU type it doesn't run. Every app/Shield pair gets a
+        progress step up front, so the page shows the whole queue.
         """
+        names = {
+            n for _, sources, _, devices in plan for n in [*sources, *(d.name for d in devices)]
+        }
+        abis = {
+            r["device"]: r["result"]
+            for r in self._on_devices(
+                [self.registry.get(n) for n in sorted(names)], deploy.device_abis
+            )
+            if r["ok"]
+        }
+
+        def ranked(sources: list[str], device: Device) -> list[str]:
+            return fleet.rank_sources(sources, abis.get(device.name, []), abis)
+
         steps = {
-            (package, device.name): job.add_step(package, self._label(package), device.name, source)
-            for package, source, _, devices in plan
+            (package, device.name): job.add_step(
+                package, self._label(package), device.name, ranked(sources, device)[0]
+            )
+            for package, sources, _, devices in plan
             for device in devices
         }
-        for package, source, version, devices in plan:
+        for package, sources, version, devices in plan:
             mine = [steps[(package, d.name)] for d in devices]
             label = self._label(package)
             try:
                 with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
-                    job.progress = f"Downloading {label} from {source}"
-                    for step in mine:
-                        step.update(DOWNLOADING)
-                    with self._connected(self.registry.get(source)) as conn:
-                        apks = _call_with_progress(deploy.pull_app, mine, conn, package, Path(tmp))
-                    for step in mine:
-                        step.update(QUEUED)
+                    pulled: dict[str, list[Path]] = {}
+
                     for device, step in zip(devices, mine, strict=True):
                         job.progress = f"Installing {label} on {device.name}"
-                        step.update(COPYING)
+                        order = ranked(sources, device)
+                        fetch = partial(self._fetch, job, package, step, pulled, Path(tmp))
                         result = self._on_device(
                             device,
-                            lambda c, a=apks, p=package, v=version, st=step: asdict(
-                                _call_with_progress(deploy.install, [st], c, a, p, v)
+                            lambda c, p=package, v=version, o=order, f=fetch, st=step: asdict(
+                                fleet.install_first_compatible(
+                                    c, p, v, o, f, progress=_step_reporter([st])
+                                )[0]
                             ),
                         )
                         if result["ok"]:
@@ -371,6 +388,21 @@ class Api:
                         step.update(FAILED, error=_err(e))
                 job.results.append({"package": package, "ok": False, "error": _err(e)})
         job.progress = ""
+
+    def _fetch(
+        self, job: Job, package: str, step: Step, pulled: dict, tmp: Path, source: str
+    ) -> list[Path]:
+        """An app's APK files from source, downloaded once per copy job and Shield."""
+        step.source = source
+        if source not in pulled:
+            job.progress = f"Downloading {self._label(package)} from {source}"
+            step.update(DOWNLOADING)
+            with self._connected(self.registry.get(source)) as conn:
+                pulled[source] = _call_with_progress(
+                    deploy.pull_app, [step], conn, package, tmp / source
+                )
+        step.update(COPYING)
+        return pulled[source]
 
     def install_from_shield(self, body: dict) -> dict:
         """Copy apps from the Shield that has the newest version (preferring the reference).
@@ -400,10 +432,10 @@ class Api:
                     continue
                 newest = max(holders.values())
                 todo = [d for d in targets if holders.get(d.name) != newest]
-                candidates = [d for d, c in holders.items() if c == newest]
-                source = reference if reference in candidates else sorted(candidates)[0]
+                candidates = sorted(d for d, c in holders.items() if c == newest)
+                candidates.sort(key=lambda d: d != reference)  # reference first if it has it
                 if todo:
-                    plan.append((package, source, newest, todo))
+                    plan.append((package, candidates, newest, todo))
             self._copy_apps(job, plan)
 
         what = self._label(packages[0]) if len(packages) == 1 else f"{len(packages)} apps"
@@ -465,9 +497,15 @@ class Api:
 
         def work(job: Job) -> None:
             job.progress = f"Checking {reference.name}"
-            reports = fleet.status(reference, targets, self.connect)
+            # Check every Shield, not just the targets: ones already up to date can stand in
+            # for the reference as the source of a copy.
+            everyone = fleet.status(reference, self.registry.list(), self.connect)
+            chosen = {d.name for d in targets}
+            reports = [r for r in everyone if r.device.name in chosen]
             wanted = {fleet.Change.INSTALL, fleet.Change.UPDATE}
             by_package: dict[str, tuple[int, list[Device]]] = {}
+            # Shields already on the reference's version can stand in for it as a source.
+            drifted = {r.device.name: {d.package for d in r.drift} for r in everyone if not r.error}
             for report in reports:
                 if report.error:
                     job.results.append(
@@ -481,7 +519,15 @@ class Api:
                         )
                         devices.append(report.device)
             plan = [
-                (package, reference.name, version, devices)
+                (
+                    package,
+                    [
+                        reference.name,
+                        *(n for n, theirs in drifted.items() if package not in theirs),
+                    ],
+                    version,
+                    devices,
+                )
                 for package, (version, devices) in sorted(by_package.items())
             ]
             self._copy_apps(job, plan)

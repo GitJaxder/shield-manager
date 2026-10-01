@@ -87,6 +87,52 @@ def _from_source(progress: ProgressCallback | None, name: str) -> ProgressCallba
     return lambda event: progress(replace(event, source=name))
 
 
+def rank_sources(
+    candidates: list[str], target_abis: list[str], abis: dict[str, list[str]]
+) -> list[str]:
+    """Order the Shields an app could be copied from, best first for one target.
+
+    A Play Store copy only carries native code for its own Shield's CPU types, so Shields
+    with the same CPU types as the target come first, then ones whose main CPU type the
+    target also runs. Otherwise the given order (e.g. reference first) is kept.
+    """
+
+    def key(name: str) -> tuple[bool, bool]:
+        mine = abis.get(name) or []
+        return mine != target_abis, not (mine and mine[0] in target_abis)
+
+    return sorted(candidates, key=key)
+
+
+def install_first_compatible(
+    conn: Connection,
+    package: str,
+    version_code: int,
+    sources: list[str],
+    fetch: Callable[[str], list[Path]],
+    **install_kwargs,
+) -> tuple[deploy.InstalledVersion, str]:
+    """Install an app from the first source whose copy this Shield can run.
+
+    fetch(source) returns that Shield's APK files. Returns the installed version and the
+    source used; raises IncompatibleAppError if no source's copy fits this Shield's CPU.
+    """
+    tried = []
+    for source in sources:
+        try:
+            return deploy.install(
+                conn, fetch(source), package, version_code, **install_kwargs
+            ), source
+        except deploy.IncompatibleAppError:
+            tried.append(source)
+    runs = ", ".join(deploy.device_abis(conn)) or "a different CPU type"
+    raise deploy.IncompatibleAppError(
+        f"not compatible with this Shield: the copies on {', '.join(tried)} are built for a "
+        f"different CPU type than it runs ({runs}). Install it on this Shield from the Play "
+        "Store instead."
+    )
+
+
 @contextmanager
 def _connected(connect: Connector, device: Device) -> Iterator[Connection]:
     conn = connect(device)
@@ -141,19 +187,34 @@ def sync(
     if dry_run:
         return reports
 
-    with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
-        pulled: dict[str, list[Path]] = {}
+    # Other Shields already on the reference's version of an app can stand in for the
+    # reference when its copy is built for a CPU type a target doesn't run.
+    drifted = {r.device.name: {d.package for d in r.drift} for r in reports if r.error is None}
+    by_name = {r.device.name: r.device for r in reports} | {reference.name: reference}
+    abis: dict[str, list[str]] = {}
 
-        def apks_for(package: str, on_progress: ProgressCallback | None) -> list[Path]:
-            if package not in pulled:
-                with _connected(connect, reference) as ref_conn:
-                    pulled[package] = deploy.pull_app(
-                        ref_conn,
+    def abis_of(name: str) -> list[str]:
+        if name not in abis:
+            try:
+                with _connected(connect, by_name[name]) as conn:
+                    abis[name] = deploy.device_abis(conn)
+            except Exception:
+                abis[name] = []
+        return abis[name]
+
+    with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
+        pulled: dict[tuple[str, str], list[Path]] = {}
+
+        def fetch(package: str, source: str, on_progress: ProgressCallback | None) -> list[Path]:
+            if (package, source) not in pulled:
+                with _connected(connect, by_name[source]) as src_conn:
+                    pulled[package, source] = deploy.pull_app(
+                        src_conn,
                         package,
-                        Path(tmp) / package,
-                        progress=_from_source(on_progress, reference.name),
+                        Path(tmp) / source / package,
+                        progress=_from_source(on_progress, source),
                     )
-            return pulled[package]
+            return pulled[package, source]
 
         for report in reports:
             if report.error:
@@ -165,25 +226,40 @@ def sync(
             ]
             if not todo:
                 continue
-            on_progress = _for_device(progress, report.device.name)
+            name = report.device.name
+            on_progress = _for_device(progress, name)
             try:
                 with _connected(connect, report.device) as conn:
+                    abis[name] = deploy.device_abis(conn)
                     for d in todo:
                         try:
                             if d.change is Change.EXTRA:
                                 deploy.uninstall(conn, d.package, progress=on_progress)
                                 report.applied[d.package] = "removed"
-                            else:
-                                deploy.install(
-                                    conn,
-                                    apks_for(d.package, on_progress),
-                                    d.package,
-                                    d.reference_version,
-                                    allow_downgrade=d.change is Change.NEWER,
-                                    progress=on_progress,
+                                continue
+                            others = [
+                                n
+                                for n, theirs in drifted.items()
+                                if n != name and d.package not in theirs
+                            ]
+                            sources = [reference.name, *others]
+                            if others:
+                                sources = rank_sources(
+                                    sources, abis[name], {n: abis_of(n) for n in sources}
                                 )
-                                verb = _PAST_TENSE[d.change]
-                                report.applied[d.package] = f"{verb} {d.reference_version}"
+                            _, source = install_first_compatible(
+                                conn,
+                                d.package,
+                                d.reference_version,
+                                sources,
+                                lambda src, pkg=d.package, cb=on_progress: fetch(pkg, src, cb),
+                                allow_downgrade=d.change is Change.NEWER,
+                                progress=on_progress,
+                            )
+                            verb = _PAST_TENSE[d.change]
+                            via = "" if source == reference.name else f" (copied from {source})"
+                            report.applied[d.package] = f"{verb} {d.reference_version}{via}"
+                            drifted[name].discard(d.package)  # can now be a source too
                         except Exception as e:
                             report.failed[d.package] = str(e) or type(e).__name__
                             if on_progress:
