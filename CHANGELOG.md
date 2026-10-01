@@ -3,6 +3,16 @@
 Each version is released as a GitHub release tagged `v<version>`. Home Assistant's app
 store offers the app's new version once it's released.
 
+## 0.2.4
+
+### Added
+
+- OS update check. The Shields tab and the new `shield-manager os status` command show each
+  Shield's Shield Experience version, Android version and security patch, and flag an update
+  when the Shield shows NVIDIA's upgrade notification or another Shield of the same hardware
+  runs a newer version. **Install update on TV** (`os open`) opens the System upgrade screen
+  on the TV. A Shield with NVIDIA's updater disabled is flagged.
+
 ## 0.2.3
 
 ### Security

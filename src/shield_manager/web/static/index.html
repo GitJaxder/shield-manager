@@ -1019,6 +1019,7 @@ function renderDevices() {
     <div class="row" data-name="${esc(d.name)}">
       <div class="grow"><strong>${esc(d.name)}</strong>${d.reference ? '<span class="star">REFERENCE</span>' : ""}
         <div class="pkg">${esc(d.address)}${d.groups.length ? " · " + d.groups.map(esc).join(", ") : ""}</div>
+        <div class="os muted" style="font-size:13px">${osLine(d.name)}</div>
         <div class="check muted" style="font-size:13px"></div></div>
       <div class="actions">
         ${d.reference ? "" : '<button class="btn small" data-act="ref">Make reference</button>'}
@@ -1035,6 +1036,34 @@ function renderDevices() {
 async function loadDevices() {
   state.devices = await api("GET", "devices");
   renderDevices();
+}
+
+// Shield Experience (OS) version per Shield, and whether an update is due. NVIDIA has no
+// feed of the latest version, so "due" means the Shield shows an upgrade notification or
+// another Shield of the same hardware runs a newer version.
+function osLine(name) {
+  if (!state.os) return state.osBusy ? "Checking the Shield software version…" : "";
+  const o = state.os.find((x) => x.device === name);
+  if (!o) return "";
+  if (!o.ok) return `<span class="err">Couldn't check the software version: ${esc(o.error)}</span>`;
+  const ver = o.version ? `Shield Experience ${esc(o.version)}` : `Build ${esc(o.build)}`;
+  const base = `${esc(o.model)} · ${ver} · Android ${esc(o.android)}${o.security_patch ? ` · patch ${esc(o.security_patch)}` : ""}`;
+  let status;
+  if (o.update_notice) status = `<span class="warn">Update offered: ${esc(o.update_notice)}</span>`;
+  else if (o.behind) status = `<span class="warn">Update due: another ${esc(o.model)} runs ${esc(o.behind)}</span>`;
+  else if (!o.updater_enabled) status = `<span class="err">Updates are switched off (NVIDIA's updater is disabled)</span>`;
+  else status = `<span class="ok">No update offered</span>`;
+  const label = o.update_available ? "Install update on TV" : "Check on TV";
+  return `${base}<br>${status} <button class="btn small" data-act="osopen" style="margin-left:6px">${label}</button>`;
+}
+
+async function loadOs() {
+  if (state.osBusy || !state.devices.length) return;
+  state.osBusy = true;
+  if (!state.os) renderDevices();
+  try { state.os = await api("GET", "os-updates"); }
+  catch (e) { notice(e.message, "err"); }
+  finally { state.osBusy = false; renderDevices(); }
 }
 
 $("#devices").addEventListener("click", async (ev) => {
@@ -1061,6 +1090,12 @@ $("#devices").addEventListener("click", async (ev) => {
     run(async () => {
       await api("PUT", path + "/groups", {groups: input.split(",").map((g) => g.trim()).filter(Boolean)});
       await loadDevices();
+    });
+  } else if (b.dataset.act === "osopen") {
+    run(async () => {
+      const r = (await api("POST", "os-updates/open", {devices: [name]})).results[0];
+      if (!r.ok) throw new Error(`${name}: ${r.error}`);
+      notice(`Opened ${r.result} on ${name}. Use the remote to check for and install the update.`, "ok", 8000);
     });
   } else if (b.dataset.act === "info") {
     run(async () => {
@@ -1149,6 +1184,7 @@ function showTab(name) {
   $("#tab-shields").hidden = name !== "shields";
   $("#tab-screens").hidden = name !== "screens";
   loadScreens();
+  if (name === "shields") loadOs();
   try { localStorage.setItem("tab", name); } catch {}
 }
 document.querySelector("nav").addEventListener("click", (ev) => {
@@ -1159,7 +1195,7 @@ document.querySelector("nav").addEventListener("click", (ev) => {
 let saved = "apps";
 try { saved = localStorage.getItem("tab") || "apps"; } catch {}
 showTab(saved);
-loadDevices().catch((e) => notice(e.message, "err"));
+loadDevices().then(() => { if (!$("#tab-shields").hidden) loadOs(); }).catch((e) => notice(e.message, "err"));
 loadCatalog();
 loadOnline();
 api("GET", "jobs").then((jobs) => jobs.filter((j) => j.state === "running").forEach(track)).catch(() => {});

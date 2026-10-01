@@ -1,5 +1,5 @@
 name: Shield Manager
-version: "0.2.3"
+version: "0.2.4"
 slug: shield_manager
 description: Keep the apps on your Nvidia Shields in sync and install apps from an app-store screen
 url: https://github.com/GitJaxder/shield-manager

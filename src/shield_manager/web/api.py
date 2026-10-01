@@ -17,7 +17,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from shield_manager import appinfo, bundle, deploy, fleet, screen
+from shield_manager import appinfo, bundle, deploy, fleet, osupdate, screen
 from shield_manager.apk import ApkError
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
@@ -240,6 +240,32 @@ class Api:
         from shield_manager import adb
 
         return self._on_device(self._get(name), adb.get_props)
+
+    # -- OS updates ----------------------------------------------------------------------
+
+    def os_updates(self) -> list[dict]:
+        """Each Shield's Shield Experience version and whether an update is due."""
+        devices = self.registry.list()
+        results = self._on_devices(devices, osupdate.read_os)
+        statuses = osupdate.compare(
+            osupdate.OsStatus(r["device"], r.get("result"), r.get("error")) for r in results
+        )
+        return [
+            {
+                "device": s.device,
+                "ok": s.info is not None,
+                "error": s.error,
+                **(asdict(s.info) if s.info else {}),
+                "behind": s.behind,
+                "newest": s.newest,
+                "update_available": s.update_available,
+            }
+            for s in statuses
+        ]
+
+    def open_update_screen(self, body: dict) -> dict:
+        devices = self._resolve(body.get("devices"))
+        return {"results": self._on_devices(devices, osupdate.open_update_screen)}
 
     # -- catalog -------------------------------------------------------------------------
 

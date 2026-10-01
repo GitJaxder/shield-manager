@@ -145,6 +145,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_args(updates)
 
+    os_cmd = sub.add_parser("os", help="check the Shield Experience (OS) version of each Shield")
+    os_sub = os_cmd.add_subparsers(dest="action", required=True)
+    os_status = os_sub.add_parser(
+        "status",
+        help="show each Shield's OS version and whether an update is due (targets default to all)",
+    )
+    _add_target_args(os_status)
+    os_open = os_sub.add_parser(
+        "open", help="open the System upgrade screen on the TV, to install with the remote"
+    )
+    _add_target_args(os_open)
+    os_props = os_sub.add_parser(
+        "props", help="list a Shield's version and build properties (for troubleshooting)"
+    )
+    os_props.add_argument("name")
+
     source = sub.add_parser(
         "source", help="choose GitHub repositories to download apps and updates from"
     )
@@ -469,6 +485,46 @@ def _run_source(args: argparse.Namespace, registry: Registry) -> int:
     return 0
 
 
+def _run_os(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager import adb, osupdate
+
+    if args.action == "props":
+        conn = adb.connect(registry.get(args.name))
+        try:
+            props = osupdate.parse_props(str(conn.shell("getprop")))
+        finally:
+            conn.close()
+        for key, value in osupdate.version_props(props).items():
+            print(f"{key}: {value}")
+        return 0
+
+    picked = args.device or args.group or args.all
+    if args.action == "open":
+        if not picked:
+            print("error: pick a Shield with -d NAME, -g GROUP or --all", file=sys.stderr)
+            return 2
+        targets = registry.resolve(args.device, args.group, args.all)
+        return _for_each_device(
+            targets, lambda c: f"opened {osupdate.open_update_screen(c)} on the TV"
+        )
+
+    targets = registry.resolve(args.device, args.group, args.all) if picked else registry.list()
+    # Every Shield is read so each target is compared with its twins, even unpicked ones.
+    names = {d.name for d in targets}
+    statuses = osupdate.check(registry.list() if picked else targets, adb.connect)
+    failed = 0
+    for status in statuses:
+        if status.device not in names:
+            continue
+        failed += status.info is None
+        stream = sys.stderr if status.info is None else sys.stdout
+        print(f"{status.device}: {status.describe()}", file=stream)
+    due = [s.device for s in statuses if s.device in names and s.update_available]
+    if due:
+        print(f"Update due on: {', '.join(due)}. Install it with: shield-manager os open -d NAME")
+    return 1 if failed else 0
+
+
 def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
     from shield_manager import adb, fleet
     from shield_manager.sources import Downloader
@@ -582,6 +638,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_app(args, registry)
         elif args.command == "fleet":
             return _run_fleet(args, registry)
+        elif args.command == "os":
+            return _run_os(args, registry)
         elif args.command == "source":
             return _run_source(args, registry)
         elif args.command == "key":

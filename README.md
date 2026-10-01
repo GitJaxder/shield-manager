@@ -36,6 +36,7 @@ this repository's source.
   - [Install, update and remove apps](#install-update-and-remove-apps)
   - [Mirror a reference Shield](#mirror-a-reference-shield)
   - [Check for updates](#check-for-updates)
+  - [Check the Shield software version](#check-the-shield-software-version)
   - [Choose GitHub sources](#choose-github-sources)
 - [How apps are found for mixed Shield models](#how-apps-are-found-for-mixed-shield-models)
   - [Use a download link](#use-a-download-link)
@@ -223,6 +224,11 @@ Add, group and remove Shields, pick the reference, check a connection, list each
 apps (system apps too, if you tick the box), and install an APK or APK bundle (`.apkm`,
 `.xapk`, `.apks`) you upload.
 
+Each Shield also shows its Shield Experience (OS) version, Android version and security
+patch, and whether an OS update is due (see
+[Check the Shield software version](#check-the-shield-software-version)). **Install update
+on TV** opens the Shield's System upgrade screen; press Update with the remote.
+
 ### Install progress
 
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
@@ -330,6 +336,22 @@ This compares each installed app that has a GitHub source (see
 can't be checked yet. Updates are installed on every Shield that has the app, with the build
 for its CPU type, and only when the download is signed by the same developer as the installed
 copy.
+
+### Check the Shield software version
+
+```sh
+shield-manager os status           # each Shield's Shield Experience version, and whether an update is due
+shield-manager os open -d den      # open the System upgrade screen on den's TV
+shield-manager os props den        # list den's version and build properties (troubleshooting)
+```
+
+NVIDIA doesn't publish the latest version in a form a program can read, and a Shield can't
+be told to install an update over ADB. So an update counts as due when the Shield shows its
+own "system upgrade available" notification, or when another Shield of the same hardware
+(2015, 2017, 2019, or 2019 Pro) runs a newer version. `os open` wakes the Shield and opens its
+System upgrade screen, where the remote starts the check and the install. A Shield whose
+NVIDIA updater (`com.nvidia.ota`) is disabled, for example by a debloat script, is flagged
+because it will never update.
 
 ### Choose GitHub sources
 

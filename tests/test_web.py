@@ -790,3 +790,19 @@ def test_download_page_for_an_app_on_a_shield(ui):
     assert status == 200 and body["url"] == "https://www.apkmirror.com/apk/kodi"
     assert body["site"] == "APKMirror"
     assert asked == [("org.xbmc.kodi", "20.0", asked[0][2])]  # den has the newest, 20.0
+
+
+def test_os_updates_reports_each_shield(ui):
+    status, rows = ui("GET", "/api/os-updates")
+    assert status == 200
+    assert [r["device"] for r in rows] == ["den", "living"]
+    assert all(r["ok"] and r["update_available"] is False for r in rows)
+    assert {"model", "version", "android", "build", "behind", "updater_enabled"} <= set(rows[0])
+
+
+def test_os_updates_open_runs_on_the_picked_shield(ui):
+    status, body = ui("POST", "/api/os-updates/open", {"devices": ["den"]})
+    assert status == 200
+    assert body["results"] == [{"device": "den", "ok": True, "result": "System upgrade"}]
+    status, body = ui("POST", "/api/os-updates/open", {"devices": []})
+    assert status == 400
