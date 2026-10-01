@@ -17,7 +17,13 @@ from shield_manager import deploy
 from shield_manager.apk import ApkError, read_apk_info, signers
 from shield_manager.deploy import Connection, Phase, Progress, ProgressCallback
 from shield_manager.registry import Device
-from shield_manager.sources import Downloader, SourceUnavailable, Wanted, version_key
+from shield_manager.sources import (
+    Downloader,
+    SourceUnavailable,
+    Wanted,
+    page_site,
+    version_key,
+)
 
 Connector = Callable[[Device], Connection]
 
@@ -120,17 +126,14 @@ def source_order(
     package: str,
     downloads: Downloader | None = None,
 ) -> list[str]:
-    """Every source to try for one target, best first.
+    """Every source to try for one target, best first: your Shields (those whose copy the
+    target can likely run first), then GitHub when downloads are on.
 
-    Shields whose copy the target can likely run come first, then a GitHub download when
-    the app's repository is known, then the remaining Shields.
+    When none of them works, NoCompatibleCopy.describe() lists the steps after these: a
+    download page (APKMirror, found the way Morphe does), a web search, the Play Store.
     """
     ranked = rank_sources(shields, target_abis, abis)
-    if downloads is None:
-        return ranked
-    likely = [n for n in ranked if (abis.get(n) or [""])[0] in target_abis]
-    online = [GITHUB] if downloads.github_repo(package) else []
-    return likely + online + [n for n in ranked if n not in likely]
+    return ranked + ([GITHUB] if downloads is not None else [])
 
 
 Pull = Callable[[str, str, Path, ProgressCallback | None], list[Path]]
@@ -180,6 +183,8 @@ class Fetcher:
     ) -> list[Path]:
         if self.downloads is None:
             raise SourceUnavailable("downloads are turned off")
+        if not self.downloads.github_repo(self.package):
+            raise SourceUnavailable("it isn't an open-source app it knows the repository of")
         trusted, version_name = self._trusted()
         if not trusted:
             raise SourceUnavailable(
@@ -237,6 +242,37 @@ class Fetcher:
         raise SourceUnavailable("couldn't read the copy on any Shield: " + "; ".join(errors))
 
 
+class NoCompatibleCopy(deploy.IncompatibleAppError):
+    """No Shield or download had a copy of an app this Shield can run.
+
+    steps says what each source tried had to offer, as (source, outcome); describe() adds
+    what to do next: a download page, a web search, the Play Store.
+    """
+
+    def __init__(self, package: str, steps: list[tuple[str, str]]):
+        self.package, self.steps = package, steps
+        super().__init__(self.describe())
+
+    def describe(self, shield: str | None = None, page: str | None = None) -> str:
+        """The steps, for the Shield named shield (None: "this Shield"), and page, a link
+        from download_page(), when there is one."""
+        name = shield or "<shield>"
+        install = f"then install the file with `shield-manager app install FILE -d {name}`"
+        steps = list(self.steps)
+        if page:
+            site = page_site(page)
+            if site:
+                steps.append((site, f"download it from {page}, {install}"))
+            else:
+                steps.append(("APKMirror", "no download page found"))
+                steps.append(("Google search", f"look for it at {page}, {install}"))
+        steps.append(
+            ("Play Store", f"`shield-manager app store-page {self.package} -d {name}` opens it")
+        )
+        lines = "".join(f"\n    {i}. {src}: {outcome}" for i, (src, outcome) in enumerate(steps, 1))
+        return f"no copy {shield or 'this Shield'} can run.{lines}"
+
+
 def install_first_compatible(
     conn: Connection,
     package: str,
@@ -249,30 +285,33 @@ def install_first_compatible(
 
     fetch(source) returns that source's APK files, raising (e.g. SourceUnavailable) when
     it has none to offer. Returns the installed version and the source used; raises
-    IncompatibleAppError, saying what each source lacked, if none worked.
+    NoCompatibleCopy, saying what each source lacked, if none worked.
     """
-    wrong_cpu, reasons = [], []
+    wrong_cpu, shield_errors, github = [], [], "downloads are turned off"
     for source in sources:
         try:
             paths = fetch(source)
         except Exception as e:  # unreachable Shield, nothing to download: try the next one
-            reasons.append(f"{source}: {e}")
+            if source == GITHUB:
+                github = str(e) or type(e).__name__
+            else:
+                shield_errors.append(f"{source}: {e}")
             continue
         try:
             return deploy.install(conn, paths, package, version_code, **install_kwargs), source
         except deploy.IncompatibleAppError:
-            wrong_cpu.append(source)
+            if source == GITHUB:
+                github = "its release is built for a different CPU type"
+            else:
+                wrong_cpu.append(source)
     runs = ", ".join(deploy.device_abis(conn)) or "a different CPU type"
+    found = []
     if wrong_cpu:
-        reasons.insert(
-            0,
-            f"the copies on {', '.join(wrong_cpu)} are built for a different CPU type than "
-            f"it runs ({runs})",
-        )
-    hint = f"`shield-manager app store-page {package} -d <shield>` opens the page there"
-    raise deploy.IncompatibleAppError(
-        f"not compatible with this Shield: {'; '.join(reasons)}. Install it on this Shield "
-        f"from the Play Store instead ({hint})."
+        found.append(f"the copies on {', '.join(wrong_cpu)} are built for a different CPU type")
+    found += shield_errors
+    shields = "; ".join(found) or "none has it"
+    raise NoCompatibleCopy(
+        package, [(f"Your Shields (this one runs {runs})", shields), ("GitHub", github)]
     )
 
 
@@ -429,15 +468,11 @@ def sync(
                             drifted[name].discard(d.package)  # can now be a source too
                         except Exception as e:
                             report.failed[d.package] = str(e) or type(e).__name__
-                            page = None
-                            if isinstance(e, deploy.IncompatibleAppError) and d.package in fetchers:
+                            if isinstance(e, NoCompatibleCopy):
                                 page = fetchers[d.package].download_page(abis[name])
-                            if page:
-                                report.download_pages[d.package] = page
-                                report.failed[d.package] += (
-                                    f" Or download a copy for {name} from {page} and install it"
-                                    f" with `shield-manager app install FILE -d {name}`."
-                                )
+                                if page:
+                                    report.download_pages[d.package] = page
+                                report.failed[d.package] = e.describe(name, page)
                             if on_progress:
                                 on_progress(
                                     Progress(

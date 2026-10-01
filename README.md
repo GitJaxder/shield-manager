@@ -165,30 +165,34 @@ refuse to run until they are installed from the Play Store on that Shield.
 ### Mixed Shield models
 
 Different Shield models run different CPU types, and the Play Store gives each Shield only
-the version built for its own. So for each Shield, `sync` (and the web UI) tries these
-sources in order, and uses the first copy that Shield can run:
+the version built for its own. So for each Shield, `sync` (and the web UI) works down this
+list and stops at the first step that gives it a copy that Shield can run:
 
-1. Another Shield of the same model that already has the app.
-2. GitHub releases, for open-source apps it knows (SmartTube, the Home Assistant app).
-3. Your other Shields.
+1. **Your Shields:** a copy from another Shield, trying Shields of the same model first.
+2. **GitHub:** a release, for open-source apps it knows (SmartTube, the Home Assistant app).
+   It's only installed when it's signed by the same developer as the copy already on your
+   Shields, so a tampered download is refused.
+3. **APKMirror:** a link to the page for the right version and CPU type, found the way
+   [Morphe](https://github.com/MorpheApp/morphe-manager) does. Morphe's server occasionally
+   finds it on Uptodown, APKPure or APKCombo instead.
+4. **Google search:** when there's no such page, a link to a web search on those sites.
+5. **Play Store:** a command that opens the app's page on that Shield, where you press
+   **Install** with the remote.
 
-A GitHub download is only installed when it's signed by the same developer as the copy
-already on your Shields, so a tampered download is refused. Add `--no-download` to only copy
-between Shields.
+Steps 1 and 2 happen automatically. If neither works, the error lists what each step found,
+for example:
 
-If none of them has a copy the Shield can run, the error includes a link to the download
-page for the right version and CPU type. It finds the page the way
-[Morphe](https://github.com/MorpheApp/morphe-manager) does: Morphe's server points to that
-build on APKMirror (or Uptodown, APKPure or APKCombo), and if it can't, the link is a web
-search on those sites instead. You can also get the link yourself:
-
-```sh
-shield-manager app download-page com.valvesoftware.steamlink -d bedroom
+```text
+com.valvesoftware.steamlink: FAILED: no copy bedroom can run.
+    1. Your Shields (this one runs armeabi-v7a, armeabi): the copies on den are built for a different CPU type
+    2. GitHub: it isn't an open-source app it knows the repository of
+    3. APKMirror: download it from https://www.apkmirror.com/apk/..., then install the file with `shield-manager app install FILE -d bedroom`
+    4. Play Store: `shield-manager app store-page com.valvesoftware.steamlink -d bedroom` opens it
 ```
 
-Then:
+To use a download link:
 
-1. Open the link on your computer.
+1. Open it on your computer.
 2. Download the APK file. On APKMirror, scroll to the download section and press
    **DOWNLOAD APK**.
 3. Install it on the Shield:
@@ -200,12 +204,13 @@ Then:
    Or upload it on the web UI's **Shields** tab.
 
 Files you download yourself aren't checked against your Shields' copy, so stick to the page
-the link opens. Another way is to open the app's Play Store page on that Shield and press
-**Install** with the remote:
+the link opens. You can also get the link without syncing:
 
 ```sh
-shield-manager app store-page com.valvesoftware.steamlink -d bedroom
+shield-manager app download-page com.valvesoftware.steamlink -d bedroom
 ```
+
+Add `--no-download` to `sync` to skip steps 2 to 4.
 
 ### Checking for updates
 

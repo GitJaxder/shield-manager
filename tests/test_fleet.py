@@ -156,8 +156,13 @@ def test_sync_reports_an_app_no_shield_has_a_compatible_copy_of():
     shields, get = _mixed_fleet(attic_has_plex=False)
     reports = fleet.sync(REF, [DEN, ATTIC], lambda d: get(_by_name(d)))
     for report in reports:
-        assert "not compatible with this Shield" in report.failed["plex"]
-        assert "Play Store" in report.failed["plex"]
+        error = report.failed["plex"]
+        assert error.startswith(f"no copy {report.device.name} can run.")
+        assert "1. Your Shields (this one runs" in error
+        assert "2. GitHub: downloads are turned off" in error
+        assert (
+            f"3. Play Store: `shield-manager app store-page plex -d {report.device.name}`" in error
+        )
     assert not shields[DEN.name].pushed  # refused before copying anything
 
 
@@ -215,25 +220,48 @@ def test_sync_refuses_a_download_signed_by_someone_else(tmp_path):
     pkg, shields, downloads = _download_fleet(tmp_path, github_cert=b"impostor")
     [attic] = fleet.sync(REF, [ATTIC], lambda d: shields[d.name], downloads=downloads)
     error = attic.failed[pkg]
-    assert "GitHub: its copy is signed by a different developer" in error
-    assert f"shield-manager app store-page {pkg}" in error
     page = attic.download_pages[pkg]  # Morphe isn't reachable here, so a web search
     assert page == sources.web_search_url(pkg, "1.0", "armeabi-v7a")
-    assert f"download a copy for attic from {page}" in error
+    steps = error.splitlines()[1:]
+    assert [line.split(":")[0].strip() for line in steps] == [
+        "1. Your Shields (this one runs armeabi-v7a, armeabi)",
+        "2. GitHub",
+        "3. APKMirror",
+        "4. Google search",
+        "5. Play Store",
+    ]
+    assert f"the copies on {REF.name} are built for a different CPU type" in steps[0]
+    assert "its copy is signed by a different developer" in steps[1]
+    assert steps[2].endswith("no download page found")
+    assert f"look for it at {page}, then install the file with" in steps[3]
+    assert "`shield-manager app install FILE -d attic`" in steps[3]
+    assert f"`shield-manager app store-page {pkg} -d attic`" in steps[4]
     assert pkg not in shields[ATTIC.name].installed
 
 
-def test_source_order_puts_downloads_between_likely_and_unlikely_shields():
+def test_sync_links_the_apkmirror_page_when_morphe_finds_one(tmp_path):
+    from shield_manager import sources
+
+    pkg, shields, downloads = _download_fleet(tmp_path, github_cert=b"impostor")
+    page = "https://www.apkmirror.com/apk/smarttube/smarttube-1-0-release/"
+    downloads.http.redirects[sources.morphe_url(pkg, "1.0", "armeabi-v7a")] = page
+    [attic] = fleet.sync(REF, [ATTIC], lambda d: shields[d.name], downloads=downloads)
+    steps = attic.failed[pkg].splitlines()[1:]
+    assert steps[2].strip().startswith(f"3. APKMirror: download it from {page}, then install")
+    assert steps[3].strip().startswith("4. Play Store:")
+    assert attic.download_pages[pkg] == page
+
+
+def test_source_order_tries_every_shield_before_github():
     from shield_manager import sources
 
     d = sources.Downloader(github_apps={"pkg": "o/r"})
     abis = {"ref": ARM64, "attic": ARM32}
     assert fleet.source_order(["ref", "attic"], ARM32, abis, "pkg", d) == [
         "attic",
-        "GitHub",
         "ref",
+        "GitHub",
     ]
-    assert fleet.source_order(["ref"], ARM32, abis, "other", d) == ["ref"]
     assert fleet.source_order(["ref"], ARM32, abis, "pkg", None) == ["ref"]
 
 
