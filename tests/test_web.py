@@ -279,3 +279,45 @@ def test_unreadable_app_details_are_retried_after_restart_not_every_load(ui, mon
     assert ui("GET", "/api/catalog")[1]["meta_pending"] is False
     assert len(calls) == first
     assert ui.api.meta.load() == {}  # failures aren't written to disk
+
+
+def test_now_showing_reports_each_shield_and_serves_its_screenshot(ui, monkeypatch):
+    from shield_manager import screen
+
+    captures = []
+
+    def fake_activity(conn):
+        return screen.Activity(True, "Awake", "com.google.android.tvlauncher")
+
+    def fake_screenshot(conn):
+        captures.append(conn)
+        return screen.PNG_SIGNATURE + b"pixels"
+
+    monkeypatch.setattr(screen, "current_activity", fake_activity)
+    monkeypatch.setattr(screen, "screenshot", fake_screenshot)
+    status, shown = ui("GET", "/api/now-showing")
+    assert status == 200
+    by_name = {s["device"]: s for s in shown}
+    assert by_name["den"]["ok"] and by_name["den"]["image"]
+    assert by_name["den"]["label"] == "Home screen"
+    assert "png" not in by_name["den"]
+
+    status, png = ui("GET", "/api/screens/den")
+    assert status == 200 and png.startswith(screen.PNG_SIGNATURE)
+
+    # A second look straight away reuses the capture instead of taking another.
+    ui("GET", "/api/now-showing")
+    assert len(captures) == 2
+
+
+def test_now_showing_skips_the_screenshot_while_asleep(ui, monkeypatch):
+    from shield_manager import screen
+
+    monkeypatch.setattr(
+        screen, "current_activity", lambda c: screen.Activity(False, "Asleep", None)
+    )
+    monkeypatch.setattr(screen, "screenshot", lambda c: pytest.fail("captured while asleep"))
+    status, shown = ui("GET", "/api/now-showing")
+    assert status == 200
+    assert all(s["ok"] and not s["awake"] and not s["image"] for s in shown)
+    assert ui("GET", "/api/screens/den")[0] == 404
