@@ -31,6 +31,11 @@ GITHUB_APPS = {
     "com.liskovsoft.smarttubetv.beta": "yuliskov/SmartTube",
     "io.homeassistant.companion.android": "home-assistant/android",
 }
+# File name patterns for built-in repos that publish several apps or variants.
+GITHUB_ASSETS = {
+    "com.teamsmart.videomanager.tv": "stable",
+    "com.liskovsoft.smarttubetv.beta": "beta",
+}
 
 # Morphe Manager's lookup: GET <url><package>~<version or "any">~<CPU type> redirects to the
 # download page for that build.
@@ -90,30 +95,112 @@ class Http:
         return urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
 
 
+@dataclass(frozen=True)
+class GitHubSource:
+    """Where an app's releases are published on GitHub, like an Obtainium source."""
+
+    repo: str  # "owner/name"
+    # A regular expression release file names must match (case-insensitive), for repos
+    # that publish several apps or variants; None takes every .apk.
+    asset: str | None = None
+    builtin: bool = False  # one of GITHUB_APPS rather than one you set
+
+
+SOURCES_FILE = "app-sources.json"
+_REPO = re.compile(r"^(?:https?://)?(?:www\.)?(?:github\.com/)?([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
+def parse_repo(text: str) -> str:
+    """ "owner/name" from "owner/name" or a github.com URL; ValueError otherwise."""
+    text = text.strip()
+    match = _REPO.match(text) or _REPO.match("/".join(text.split("/")[:5]))
+    if not match:
+        raise ValueError(f"not a GitHub repository: {text!r} (use owner/name or its URL)")
+    return f"{match.group(1)}/{match.group(2)}"
+
+
 @dataclass
 class Downloader:
     http: Http = field(default_factory=Http)
-    github_apps: dict[str, str] = field(default_factory=dict)
+    # package -> "owner/name" or a GitHubSource
+    github_apps: dict[str, str | GitHubSource] = field(default_factory=dict)
+    # Where set_github_source() saves; None keeps changes in memory only.
+    config_dir: Path | None = None
 
     @classmethod
     def from_config(cls, config_dir: Path) -> Downloader:
-        """Built-in GitHub apps plus any in <config>/app-sources.json, e.g.
-        {"github": {"org.example.app": "owner/repo"}}."""
-        apps = dict(GITHUB_APPS)
-        path = config_dir / "app-sources.json"
-        if path.exists():
-            apps.update(json.loads(path.read_text()).get("github", {}))
-        return cls(github_apps=apps)
+        """Built-in GitHub apps plus the sources in <config>/app-sources.json, e.g.
+        {"github": {"org.example.app": "owner/name",
+                    "org.other.app": {"repo": "owner/name", "asset": "tv.*\\.apk"},
+                    "com.teamsmart.videomanager.tv": null}}  (null hides a built-in)."""
+        apps: dict[str, str | GitHubSource] = {
+            pkg: GitHubSource(repo, GITHUB_ASSETS.get(pkg), builtin=True)
+            for pkg, repo in GITHUB_APPS.items()
+        }
+        for pkg, value in _read_sources(config_dir).items():
+            if value is None:
+                apps.pop(pkg, None)
+            elif isinstance(value, str):
+                apps[pkg] = GitHubSource(value)
+            else:
+                apps[pkg] = GitHubSource(value["repo"], value.get("asset"))
+        return cls(github_apps=apps, config_dir=config_dir)
+
+    def github_source(self, package: str) -> GitHubSource | None:
+        source = self.github_apps.get(package)
+        return GitHubSource(source) if isinstance(source, str) else source
 
     def github_repo(self, package: str) -> str | None:
-        return self.github_apps.get(package)
+        source = self.github_source(package)
+        return source.repo if source else None
+
+    def github_sources(self) -> dict[str, GitHubSource]:
+        """Every app with a GitHub source, by package name."""
+        return {pkg: self.github_source(pkg) for pkg in sorted(self.github_apps)}
+
+    def set_github_source(self, package: str, repo: str, asset: str | None = None) -> GitHubSource:
+        """Use repo's releases (owner/name or URL) for package, optionally only files whose
+        names match asset, and save it. Raises ValueError for a bad repo or pattern."""
+        if asset:
+            try:
+                re.compile(asset)
+            except re.error as e:
+                raise ValueError(f"not a valid file name pattern: {asset!r} ({e})") from e
+        source = GitHubSource(parse_repo(repo), asset or None)
+        self.github_apps[package] = source
+        self._save(package, {"repo": source.repo, "asset": source.asset} if asset else source.repo)
+        return source
+
+    def remove_github_source(self, package: str) -> bool:
+        """Stop using GitHub for package (built-in sources too). False if it had none."""
+        if package not in self.github_apps:
+            return False
+        del self.github_apps[package]
+        self._save(package, None if package in GITHUB_APPS else _DELETE)
+        return True
+
+    def _save(self, package: str, value: object) -> None:
+        if self.config_dir is None:
+            return
+        path = self.config_dir / SOURCES_FILE
+        data = json.loads(path.read_text()) if path.exists() else {}
+        github = data.setdefault("github", {})
+        if value is _DELETE:
+            github.pop(package, None)
+        else:
+            github[package] = value
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp.replace(path)
 
     def github(
         self, wanted: Wanted, dest: Path, progress: ProgressBytes | None = None
     ) -> list[Path]:
-        repo = self.github_repo(wanted.package)
-        if not repo:
+        source = self.github_source(wanted.package)
+        if not source:
             raise SourceUnavailable("no GitHub repository known for it")
+        repo = source.repo
         try:
             releases = json.loads(
                 self.http.get(
@@ -128,7 +215,11 @@ class Downloader:
         for release in releases:
             if release.get("draft") or (wanted.newer and release.get("prerelease")):
                 continue
-            for asset in rank_assets(release.get("assets", []), wanted.abis):
+            assets = release.get("assets", [])
+            if source.asset:
+                pattern = re.compile(source.asset, re.IGNORECASE)
+                assets = [a for a in assets if pattern.search(a.get("name", ""))]
+            for asset in rank_assets(assets, wanted.abis):
                 if tried == GITHUB_MAX_DOWNLOADS:
                     break
                 tried += 1
@@ -218,6 +309,14 @@ def web_search_url(package: str, version_name: str | None, abi: str) -> str:
     version = f' "{version_name}"' if version_name else ""
     query = f'"{package}"{version} {abi} {DOWNLOAD_SITES}'
     return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
+
+
+_DELETE = object()
+
+
+def _read_sources(config_dir: Path) -> dict:
+    path = config_dir / SOURCES_FILE
+    return json.loads(path.read_text()).get("github", {}) if path.exists() else {}
 
 
 def version_key(name: str) -> tuple[int, ...]:

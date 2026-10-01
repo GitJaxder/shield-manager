@@ -147,3 +147,46 @@ def test_page_site_names_the_download_site():
     assert sources.page_site("https://www.apkmirror.com/apk/x/") == "APKMirror"
     assert sources.page_site("https://smarttube.en.uptodown.com/android/download/1-x") == "Uptodown"
     assert sources.page_site(sources.web_search_url("a.b", None, "x86")) is None
+
+
+def test_parse_repo_takes_names_and_urls():
+    assert sources.parse_repo("yuliskov/SmartTube") == "yuliskov/SmartTube"
+    assert sources.parse_repo("https://github.com/yuliskov/SmartTube") == "yuliskov/SmartTube"
+    assert sources.parse_repo("https://github.com/o/r/releases/latest") == "o/r"
+    assert sources.parse_repo("github.com/o/r.git") == "o/r"
+    with pytest.raises(ValueError, match="not a GitHub repository"):
+        sources.parse_repo("kodi")
+
+
+def test_github_sources_are_saved_and_reloaded(tmp_path):
+    d = Downloader.from_config(tmp_path)
+    assert d.github_source(PKG) == sources.GitHubSource("yuliskov/SmartTube", "stable", True)
+    d.set_github_source("org.xbmc.kodi", "https://github.com/xbmc/xbmc", asset=r"arm.*\.apk")
+    assert d.remove_github_source(PKG)
+    assert not d.remove_github_source("org.unknown")
+
+    again = Downloader.from_config(tmp_path)
+    assert again.github_source("org.xbmc.kodi") == sources.GitHubSource("xbmc/xbmc", r"arm.*\.apk")
+    assert again.github_repo(PKG) is None  # a built-in, hidden
+    assert "com.liskovsoft.smarttubetv.beta" in again.github_sources()
+
+    again.set_github_source(PKG, "yuliskov/SmartTube")  # back, now as your own
+    assert Downloader.from_config(tmp_path).github_source(PKG).builtin is False
+
+
+def test_set_github_source_rejects_a_bad_pattern(tmp_path):
+    with pytest.raises(ValueError, match="pattern"):
+        Downloader.from_config(tmp_path).set_github_source("a.b", "o/r", asset="(")
+    assert not (tmp_path / sources.SOURCES_FILE).exists()
+
+
+def test_github_only_downloads_files_matching_the_pattern(tmp_path):
+    release = _release(tmp_path, "1.0", 100, "armeabi-v7a")
+    other = real_apk(tmp_path / "Other_armeabi-v7a.apk", "org.other", 5, "1", ["armeabi-v7a"])
+    url = "https://github.com/dl/Other_armeabi-v7a.apk"
+    release["assets"].insert(0, {"name": other.name, "browser_download_url": url, "path": other})
+    http = _github(tmp_path, [release])
+    d = Downloader(http, {PKG: sources.GitHubSource("yuliskov/SmartTube", "smarttube")})
+    [path] = d.github(Wanted(PKG, 100, "1.0", ARM32), tmp_path / "out")
+    assert path.name == "SmartTube_1.0_armeabi-v7a.apk"
+    assert url not in [u for u, _ in http.requests]

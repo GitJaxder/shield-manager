@@ -254,3 +254,22 @@ def test_app_download_page_links_the_build_each_shield_runs(registry, fleet, mon
     out = capsys.readouterr().out
     assert f"den: 21.1 for armeabi-v7a: {page}" in out
     assert "shield-manager app install FILE" in out
+
+
+def test_source_set_list_remove(registry, capsys):
+    assert (
+        main(["source", "set", "org.xbmc.kodi", "https://github.com/xbmc/xbmc"], registry=registry)
+        == 0
+    )
+    assert "org.xbmc.kodi: GitHub releases of xbmc/xbmc" in capsys.readouterr().out
+    assert main(["source", "list"], registry=registry) == 0
+    out = capsys.readouterr().out
+    assert "org.xbmc.kodi\thttps://github.com/xbmc/xbmc\n" in out
+    assert (
+        "com.teamsmart.videomanager.tv\thttps://github.com/yuliskov/SmartTube "
+        "(files matching stable, built in)" in out
+    )
+    assert main(["source", "remove", "org.xbmc.kodi"], registry=registry) == 0
+    assert main(["source", "remove", "org.xbmc.kodi"], registry=registry) == 1
+    assert main(["source", "set", "a.b", "nope"], registry=registry) == 2
+    assert "not a GitHub repository" in capsys.readouterr().err
