@@ -80,6 +80,18 @@ def test_package_versions():
     assert deploy.package_versions(conn) == {"a.app": 3, "b.app": 10}
 
 
+def test_split_file_names_never_reach_the_shell_unquoted(tmp_path):
+    # A bundle or download names its own split files, so a name must not run commands.
+    conn = FakeConnection()
+    base = make_apk(tmp_path / "base.apk", PKG, 42)
+    split = tmp_path / "split_config.en;reboot;$(id) `id`.apk"
+    split.write_text("x")
+    deploy.install(conn, [base, split], PKG, 42)
+    writes = [c for c in conn.commands if c.startswith("pm install-write ")]
+    assert writes[1].split()[5] == "1_split_config.en_reboot___id___id_.apk"
+    assert not any(ch in c for c in writes for ch in ";$`")
+
+
 def test_pull_app_copies_base_and_splits(tmp_path):
     conn = FakeConnection(installed={PKG: (42, "")}, splits={PKG: ["split_config.en.apk"]})
     paths = deploy.pull_app(conn, PKG, tmp_path)

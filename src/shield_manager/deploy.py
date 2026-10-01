@@ -15,6 +15,8 @@ from shield_manager import bundle
 from shield_manager.apk import native_abis
 
 REMOTE_TMP_DIR = "/data/local/tmp"
+# Characters allowed in the name of a split APK within a pm install session.
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 # Installing a large APK on a Shield can take well over the default shell timeout.
 INSTALL_TIMEOUT_S = 300.0
 # adb-shell gives up when the socket is silent for transport_timeout_s, whatever
@@ -258,9 +260,11 @@ def _install_session(
     session = match.group(1)
     for i, (local, remote) in enumerate(zip(paths, remotes, strict=True)):
         size = local.stat().st_size
+        # File names come from bundles and downloads, so they can't be trusted in a command.
+        name = shlex.quote(f"{i}_{_SAFE_NAME.sub('_', local.name)}")
         out = _shell(
             conn,
-            f"pm install-write -S {size} {session} {i}_{local.name} {shlex.quote(remote)}",
+            f"pm install-write -S {size} {session} {name} {shlex.quote(remote)}",
             **long_op,
         )
         if "Success" not in out:
