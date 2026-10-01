@@ -32,13 +32,6 @@ trust Home Assistant don't ask again in step 3. Turning it off, or not having th
 integration, means the app makes its own key. The key is only copied once; to switch,
 uninstall and reinstall the app.
 
-## Sensors, buttons and automations
-
-Install the Shield Manager integration as well (see the
-[README](https://github.com/GitJaxder/shield-manager#home-assistant)). It finds this app
-by itself and adds, for each Shield, how many apps it has and how many it's behind the
-reference on, plus buttons to sync, and actions for automations.
-
 ## Your data
 
 Your Shields, settings, ADB key and app icons are kept in the app's own storage, so they

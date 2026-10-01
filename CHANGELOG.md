@@ -1,7 +1,20 @@
 # Changelog
 
 Each version is released as a GitHub release tagged `v<version>`. Home Assistant's app
-store and HACS both offer the new version once it's released.
+store offers the app's new version once it's released.
+
+## 0.2.0
+
+### Removed
+
+- The Shield Manager integration for Home Assistant. The app in the sidebar does
+  everything it did. If you installed the integration, delete it under **Settings →
+  Devices & services → Shield Manager → ⋮ → Delete**, then remove it in HACS.
+
+### Changed
+
+- The app no longer announces itself to Home Assistant, and only accepts connections from
+  the sidebar page.
 
 ## 0.1.0
 

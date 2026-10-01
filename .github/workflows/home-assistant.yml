@@ -1,4 +1,4 @@
-name: Home Assistant
+name: Home Assistant app
 
 on:
   push:
@@ -6,34 +6,6 @@ on:
   pull_request:
 
 jobs:
-  integration-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-      - run: pip install -e . pytest-homeassistant-custom-component
-      - run: pytest tests_ha -o asyncio_mode=auto
-
-  hassfest:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: home-assistant/actions/hassfest@master
-
-  hacs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: hacs/action@main
-        with:
-          category: integration
-          comment: false
-          # brands: only integrations in Home Assistant's brands repository have one.
-          # topics: GitHub topics only matter for HACS's default list, not custom
-          # repositories.
-          ignore: brands topics
-
   app:
     runs-on: ubuntu-latest
     steps:
