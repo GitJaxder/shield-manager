@@ -67,7 +67,7 @@ def ui(tmp_path, monkeypatch):
         raise AssertionError("job didn't finish")
 
     request.registry, request.installed, request.wait_job = registry, installed, wait_job
-    request.api = server.api
+    request.api, request.server = server.api, server
     yield request
     server.shutdown()
     server.server_close()
@@ -372,6 +372,32 @@ def test_now_showing_reports_each_shield_and_serves_its_screenshot(ui, monkeypat
     # A second look straight away reuses the capture instead of taking another.
     ui("GET", "/api/now-showing")
     assert len(captures) == 2
+
+
+def test_a_page_that_hangs_up_early_is_not_an_error(ui, monkeypatch):
+    import socket
+
+    gate = threading.Event()
+    calls = []
+
+    def slow_catalog():
+        calls.append(1)
+        gate.wait(5)
+        return {"apps": []}
+
+    monkeypatch.setattr(ui.api, "catalog", slow_catalog)
+    errors = []
+    monkeypatch.setattr(ui.server, "handle_error", lambda req, addr: errors.append(addr))
+    s = socket.create_connection(("127.0.0.1", ui.server.server_port))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+    s.sendall(b"GET /api/catalog HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    while not calls:
+        time.sleep(0.01)
+    s.close()  # like a reload: resets the connection before the answer is written
+    gate.set()
+    time.sleep(0.3)
+    assert errors == []
+    assert ui("GET", "/api/devices")[0] == 200  # still serving
 
 
 def test_now_showing_skips_the_screenshot_while_asleep(ui, monkeypatch):

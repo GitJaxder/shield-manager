@@ -205,8 +205,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
         for key, value in (headers or {}).items():
             self.send_header(key, value)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The page went away first (reloaded, closed, or swapped a screenshot that was
+            # still loading), so there's no one left to answer.
+            self.close_connection = True
 
 
 class UiServer(ThreadingHTTPServer):
