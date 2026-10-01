@@ -335,8 +335,8 @@ class Api:
         Every app/Shield pair gets a progress step up front, so the page shows the whole queue.
         """
         steps = {
-            (package, device.name): job.add_step(package, self._label(package), device.name)
-            for package, _, _, devices in plan
+            (package, device.name): job.add_step(package, self._label(package), device.name, source)
+            for package, source, _, devices in plan
             for device in devices
         }
         for package, source, version, devices in plan:

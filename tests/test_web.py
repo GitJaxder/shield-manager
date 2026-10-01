@@ -288,6 +288,8 @@ def test_install_job_reports_a_step_per_app_and_shield(ui):
     steps = {(s["package"], s["device"]): s for s in job["steps"]}
     assert set(steps) == {("com.plexapp.android", "living"), ("com.retroarch", "den")}
     assert all(s["stage"] == "done" for s in steps.values())
+    # Each step names the Shield it copies from, for "Downloading Plex from den".
+    assert all(s["source"] and s["source"] != s["device"] for s in steps.values())
 
 
 def test_progress_from_core_shows_up_as_percentages(ui, monkeypatch):
@@ -337,6 +339,7 @@ def test_sync_job_has_steps(ui):
         ("com.plexapp.android", "living", "done"),
         ("org.xbmc.kodi", "living", "done"),
     ]
+    assert {s["source"] for s in job["steps"]} == {"den"}
 
 
 def test_now_showing_reports_each_shield_and_serves_its_screenshot(ui, monkeypatch):

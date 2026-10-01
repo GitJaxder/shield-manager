@@ -30,6 +30,7 @@ class Step:
     package: str
     label: str
     device: str
+    source: str | None = None  # Shield the APK is copied from; None for an uploaded APK
     stage: str = QUEUED
     percent: float | None = None  # None while the stage has no measurable progress
     error: str | None = None
@@ -42,6 +43,7 @@ class Step:
             "package": self.package,
             "label": self.label,
             "device": self.device,
+            "source": self.source,
             "stage": self.stage,
             "percent": None if self.percent is None else round(self.percent, 1),
             "error": self.error,
@@ -60,8 +62,8 @@ class Job:
     started: float = field(default_factory=time.time)
     finished: float | None = None
 
-    def add_step(self, package: str, label: str, device: str) -> Step:
-        step = Step(package, label, device)
+    def add_step(self, package: str, label: str, device: str, source: str | None = None) -> Step:
+        step = Step(package, label, device, source)
         self.steps.append(step)
         return step
 
