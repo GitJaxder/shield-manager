@@ -13,6 +13,5 @@ panel_icon: mdi:television-play
 panel_title: Shield Manager
 # No access to Home Assistant's own files: to reuse the Android TV integration's ADB key,
 # paste it into the adb_key option.
-options: {}
 schema:
   adb_key: password?
