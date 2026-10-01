@@ -50,6 +50,18 @@ After an install the tool checks that each device reports the APK's `versionCode
 handled one at a time; an unreachable device is reported and the rest still run, and the
 command exits non-zero if any device failed.
 
+## Web UI
+
+```sh
+shield-manager web            # then open http://127.0.0.1:8765/
+```
+
+The page lists your Shields, lets you add, remove and group them, shows each Shield's
+third-party apps, installs an uploaded APK on the Shields you tick, and compares every
+Shield's apps against a reference Shield (missing, older, newer, and apps only on that
+Shield, which are left alone). It listens on localhost only by default; `--host 0.0.0.0`
+exposes it to your network, and anyone who can reach it can install apps on your Shields.
+
 The device list and the ADB key live in `~/.config/shield-manager/` (override with
 `SHIELD_MANAGER_HOME`).
 

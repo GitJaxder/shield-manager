@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shield Manager</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1b1f24; --muted: #5b6470; --border: #dde1e6;
+    --accent: #76b900; --accent-text: #fff; --danger: #c62828; --warn: #b26a00; --ok: #2e7d32;
+    --chip: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1e24; --text: #e6e9ed; --muted: #9aa4af; --border: #2c323a;
+      --accent: #76b900; --accent-text: #0b0d10; --danger: #ef5350; --warn: #ffb74d;
+      --ok: #81c784; --chip: #252b33;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: baseline; gap: 12px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header span { color: var(--muted); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; display: grid; gap: 20px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; min-width: 0; }
+  h2 { margin: 0 0 12px; font-size: 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border);
+    vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input[type=text], input[type=number], select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font: inherit; min-width: 0; }
+  button { font: inherit; border-radius: 6px; padding: 6px 12px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  button.primary { background: var(--accent); border-color: var(--accent);
+    color: var(--accent-text); font-weight: 600; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .55; cursor: progress; }
+  .muted { color: var(--muted); }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px;
+    padding: 1px 8px; margin: 2px 4px 2px 0; font-size: 13px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--danger); }
+  .pkg { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  ul.pkgs { margin: 4px 0 0; padding-left: 18px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px;
+    max-width: calc(100% - 32px); display: none; }
+  .scroll { overflow-x: auto; }
+  details summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<header><h1>Shield Manager</h1><span>Keep every Shield's apps in step</span></header>
+<main>
+  <section>
+    <h2>Shields</h2>
+    <div class="scroll"><table id="devices"></table></div>
+    <form id="add-device" class="row" style="margin-top:12px">
+      <input type="text" name="name" placeholder="Name (living-room)" required>
+      <input type="text" name="host" placeholder="IP address" required>
+      <input type="number" name="port" placeholder="5555" style="width:90px">
+      <input type="text" name="groups" placeholder="Groups (comma separated)">
+      <button class="primary">Add Shield</button>
+    </form>
+    <p class="muted" style="margin:10px 0 0;font-size:13px">
+      The first connection shows an "Allow network debugging?" prompt on the TV. Accept it there.
+    </p>
+  </section>
+
+  <section>
+    <h2>Drift from reference</h2>
+    <div class="row">
+      <label for="reference">Reference Shield</label>
+      <select id="reference"></select>
+      <button id="check-drift" class="primary">Check drift</button>
+    </div>
+    <div id="drift" style="margin-top:12px"></div>
+  </section>
+
+  <section>
+    <h2>Install an APK</h2>
+    <form id="install" class="row">
+      <input type="file" name="apk" accept=".apk" required>
+      <span id="install-targets" class="row"></span>
+      <label><input type="checkbox" name="downgrade"> Allow downgrade</label>
+      <button class="primary">Install</button>
+    </form>
+    <div id="install-result" style="margin-top:10px"></div>
+  </section>
+
+  <section id="apps-section" hidden>
+    <h2 id="apps-title">Apps</h2>
+    <div id="apps"></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+let devices = [];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.style.display = "none"), 4000);
+}
+
+async function api(method, path, body, headers = {}) {
+  const opts = {method, headers: {"X-Shield-Manager": "1", ...headers}};
+  if (body instanceof Blob) opts.body = body;
+  else if (body !== undefined) {
+    opts.body = JSON.stringify(body);
+    opts.headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch("/api/" + path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function busy(button, fn) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Working…";
+  try { await fn(); } catch (e) { toast(e.message); }
+  finally { button.disabled = false; button.textContent = label; }
+}
+
+function renderDevices() {
+  const table = $("#devices");
+  if (!devices.length) {
+    table.innerHTML = '<tr><td class="muted">No Shields yet. Add one below.</td></tr>';
+  } else {
+    table.innerHTML = "<tr><th>Name</th><th>Address</th><th>Groups</th><th>Status</th><th></th></tr>" +
+      devices.map((d) => `<tr data-name="${esc(d.name)}">
+        <td><strong>${esc(d.name)}</strong></td>
+        <td class="pkg">${esc(d.address)}</td>
+        <td>${d.groups.map((g) => `<span class="chip">${esc(g)}</span>`).join("") || '<span class="muted">none</span>'}</td>
+        <td class="status muted">not checked</td>
+        <td class="row" style="justify-content:flex-end">
+          <button data-act="info">Check</button>
+          <button data-act="apps">Apps</button>
+          <button data-act="groups">Groups</button>
+          <button data-act="remove" class="danger">Remove</button>
+        </td></tr>`).join("");
+  }
+  const ref = $("#reference");
+  const keep = ref.value;
+  ref.innerHTML = devices.map((d) => `<option>${esc(d.name)}</option>`).join("");
+  if (devices.some((d) => d.name === keep)) ref.value = keep;
+  $("#install-targets").innerHTML = devices.map((d) =>
+    `<label><input type="checkbox" name="target" value="${esc(d.name)}" checked> ${esc(d.name)}</label>`).join("");
+}
+
+async function loadDevices() {
+  devices = await api("GET", "devices");
+  renderDevices();
+}
+
+$("#devices").addEventListener("click", async (ev) => {
+  const button = ev.target.closest("button");
+  if (!button) return;
+  const row = button.closest("tr");
+  const name = row.dataset.name;
+  const path = "devices/" + encodeURIComponent(name);
+  const act = button.dataset.act;
+  if (act === "remove") {
+    if (!confirm(`Forget ${name}? Nothing on the Shield is changed.`)) return;
+    await busy(button, async () => { await api("DELETE", path); await loadDevices(); });
+  } else if (act === "groups") {
+    const d = devices.find((x) => x.name === name);
+    const input = prompt(`Groups for ${name} (comma separated)`, d.groups.join(", "));
+    if (input === null) return;
+    const groups = input.split(",").map((g) => g.trim()).filter(Boolean);
+    await busy(button, async () => { await api("PUT", path + "/groups", {groups}); await loadDevices(); });
+  } else if (act === "info") {
+    await busy(button, async () => {
+      const r = await api("GET", path + "/info");
+      const cell = row.querySelector(".status");
+      cell.className = "status " + (r.ok ? "ok" : "err");
+      cell.textContent = r.ok ? `${r.result.model} · Android ${r.result.android}` : r.error;
+    });
+  } else if (act === "apps") {
+    await busy(button, () => showApps(name));
+  }
+});
+
+async function showApps(name) {
+  const r = await api("GET", "devices/" + encodeURIComponent(name) + "/apps");
+  $("#apps-section").hidden = false;
+  $("#apps-title").textContent = `Apps on ${name}`;
+  const box = $("#apps");
+  if (!r.ok) { box.innerHTML = `<p class="err">${esc(r.error)}</p>`; return; }
+  box.innerHTML = `<p class="muted">${r.result.length} third-party apps</p><table>` +
+    r.result.map((a) => `<tr><td class="pkg">${esc(a.package)}</td>
+      <td class="muted">versionCode ${a.version_code}</td>
+      <td style="text-align:right"><button class="danger" data-pkg="${esc(a.package)}">Uninstall</button></td></tr>`).join("") +
+    "</table>";
+  box.onclick = async (ev) => {
+    const button = ev.target.closest("button[data-pkg]");
+    if (!button) return;
+    const pkg = button.dataset.pkg;
+    if (!confirm(`Uninstall ${pkg} from ${name}? Its data on that Shield is deleted.`)) return;
+    await busy(button, async () => {
+      const res = await api("POST", "uninstall", {package: pkg, devices: [name]});
+      const out = res.results[0];
+      if (!out.ok) throw new Error(out.error);
+      toast(`Removed ${pkg} from ${name}`);
+      await showApps(name);
+    });
+  };
+  $("#apps-section").scrollIntoView({behavior: "smooth"});
+}
+
+function pkgList(items, cls, fmt) {
+  if (!items.length) return "";
+  return `<ul class="pkgs ${cls}">` + items.map((a) => `<li><span class="pkg">${esc(a.package)}</span>${fmt ? " " + fmt(a) : ""}</li>`).join("") + "</ul>";
+}
+
+$("#check-drift").addEventListener("click", (ev) => busy(ev.target, async () => {
+  const reference = $("#reference").value;
+  if (!reference) throw new Error("Add a Shield first");
+  const r = await api("GET", "drift?reference=" + encodeURIComponent(reference));
+  const refCodes = Object.fromEntries(r.reference_apps.map((a) => [a.package, a.version_code]));
+  const rows = r.devices.map((d) => {
+    let state;
+    if (d.error) state = `<span class="err">Unreachable: ${esc(d.error)}</span>`;
+    else if (d.in_sync) state = `<span class="ok">In sync</span>`;
+    else state = `<span class="warn">Drifted</span>`;
+    const detail = d.error ? "" : [
+      d.missing.length ? `<div><strong>Missing (${d.missing.length})</strong>${pkgList(d.missing, "")}</div>` : "",
+      d.outdated.length ? `<div><strong>Older here (${d.outdated.length})</strong>${pkgList(d.outdated, "", (a) => `<span class="muted">${a.version_code} vs ${refCodes[a.package]}</span>`)}</div>` : "",
+      d.newer.length ? `<div><strong>Newer here (${d.newer.length})</strong>${pkgList(d.newer, "", (a) => `<span class="muted">${a.version_code} vs ${refCodes[a.package]}</span>`)}</div>` : "",
+      d.extra.length ? `<details><summary class="muted">Only on this Shield (${d.extra.length}), left alone</summary>${pkgList(d.extra, "")}</details>` : "",
+    ].join("");
+    return `<tr><td><strong>${esc(d.device)}</strong></td><td>${state}${detail}</td></tr>`;
+  });
+  $("#drift").innerHTML = r.devices.length
+    ? `<p class="muted">${esc(r.reference)} has ${r.reference_apps.length} third-party apps.</p><table>${rows.join("")}</table>`
+    : '<p class="muted">Add another Shield to compare against.</p>';
+}));
+
+$("#install").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const form = ev.target;
+  const file = form.elements.apk.files[0];
+  const targets = [...form.querySelectorAll("input[name=target]:checked")].map((i) => i.value);
+  if (!targets.length) { toast("Pick at least one Shield"); return; }
+  busy(form.querySelector("button"), async () => {
+    const q = new URLSearchParams({devices: targets.join(","), allow_downgrade: form.elements.downgrade.checked ? "1" : "0"});
+    $("#install-result").innerHTML = `<p class="muted">Installing ${esc(file.name)} on ${targets.length} Shield(s)…</p>`;
+    const r = await api("POST", "install?" + q, file, {"Content-Type": "application/vnd.android.package-archive"});
+    $("#install-result").innerHTML = `<p><span class="pkg">${esc(r.apk.package)}</span> ${esc(r.apk.version_name)} (versionCode ${r.apk.version_code})</p><ul>` +
+      r.results.map((x) => `<li><strong>${esc(x.device)}</strong>: ${x.ok
+        ? `<span class="ok">installed ${esc(x.result.version_name)}</span>`
+        : `<span class="err">failed: ${esc(x.error)}</span>`}</li>`).join("") + "</ul>";
+  });
+});
+
+$("#add-device").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  busy(f.querySelector("button"), async () => {
+    await api("POST", "devices", {
+      name: f.elements.name.value.trim(), host: f.elements.host.value.trim(), port: f.elements.port.value || undefined,
+      groups: f.elements.groups.value.split(",").map((g) => g.trim()).filter(Boolean),
+    });
+    f.reset();
+    await loadDevices();
+  });
+});
+
+loadDevices().catch((e) => toast(e.message));
+</script>
+</body>
+</html>
