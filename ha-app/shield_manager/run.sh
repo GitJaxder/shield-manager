@@ -19,16 +19,8 @@ if [ ! -f /data/adbkey ] && bashio::config.true 'use_android_tv_key'; then
     fi
 fi
 
-# Announce this app to the Shield Manager integration. The container's hostname is the
-# address other apps and Home Assistant reach it on.
-if ! bashio::discovery "shield_manager" \
-    "$(bashio::var.json host "$(hostname)" port "^${PORT}")" >/dev/null; then
-    bashio::log.warning "Couldn't announce the app to the Shield Manager integration"
-fi
-
-# 172.30.32.2 is Home Assistant's ingress proxy (the sidebar page). 172.30.32.1 is Home
-# Assistant itself, for the integration. Nothing else may connect, because the page has
-# no login of its own.
+# 172.30.32.2 is Home Assistant's ingress proxy (the sidebar page). Nothing else may
+# connect, because the page has no login of its own.
 bashio::log.info "Starting Shield Manager"
 exec shield-manager web --host 0.0.0.0 --port "${PORT}" \
-    --allow-from 172.30.32.2 --allow-from 172.30.32.1
+    --allow-from 172.30.32.2

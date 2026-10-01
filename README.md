@@ -9,8 +9,7 @@ group, or all of them, and it handles Shields of different models (different CPU
 
 You can use it three ways, all with the same features:
 
-- **In Home Assistant**, as an app in the sidebar (including the Home Assistant phone app),
-  plus an optional integration for dashboards and automations.
+- **In Home Assistant**, as an app in the sidebar (including the Home Assistant phone app).
 - **In a web browser**, from `shield-manager web` running on a computer.
 - **From the command line** on a computer.
 
@@ -22,8 +21,6 @@ this repository's source.
 - [Before you start: prepare your Shields](#before-you-start-prepare-your-shields)
 - [Set up in Home Assistant](#set-up-in-home-assistant)
   - [Install the app](#install-the-app)
-  - [Install the integration (optional)](#install-the-integration-optional)
-  - [What the integration adds](#what-the-integration-adds)
 - [Set up on a computer](#set-up-on-a-computer)
   - [Requirements](#requirements)
   - [Install](#install)
@@ -64,8 +61,7 @@ from this computer. Accept it with the remote (tick **Always allow** so it doesn
 
 On Home Assistant OS, Shield Manager runs as a Home Assistant app (formerly add-on). Its
 app-store screen then appears in the sidebar, including in the Home Assistant app on your
-phone, and nothing has to run on a computer. An optional integration adds sensors, buttons
-and actions for dashboards and automations.
+phone, and nothing has to run on a computer.
 
 ### Install the app
 
@@ -91,67 +87,6 @@ Updates**. Each version installs the code of its own release, listed in the
 [changelog](CHANGELOG.md).
 
 The screen in the sidebar is the same web UI described in [Use the web UI](#use-the-web-ui).
-
-### Install the integration (optional)
-
-The integration needs [HACS](https://hacs.xyz/docs/use/download/download/).
-
-1. Open
-   [this link](https://my.home-assistant.io/redirect/hacs_repository/?owner=GitJaxder&repository=shield-manager&category=integration)
-   and select **Open link**. Or do it by hand: in HACS, select **⋮ → Custom repositories**,
-   paste `https://github.com/GitJaxder/shield-manager`, choose the type **Integration**
-   and select **Add**, then search HACS for **Shield Manager**.
-2. Select **Download**, then **Download** again.
-3. Restart Home Assistant: **Settings → System → ⋮ (top right) → Restart Home Assistant**.
-4. Go to **Settings → Devices & services**. Under **Discovered**, Shield Manager appears
-   because the app announced itself. Select **Add**, then **Submit**.
-
-   If it isn't there, make sure the app is running and restart Home Assistant once more.
-
-HACS offers new versions of the integration under **Settings → Updates** once they're
-released. Update the app and the integration together.
-
-Without HACS, copy the `custom_components/shield_manager` folder from this repository into
-the `custom_components` folder in your Home Assistant configuration folder (for example
-with the Samba share or Studio Code Server app), then follow steps 3 and 4.
-
-The integration also works with `shield-manager web` running on a computer instead of the
-app: add it under **Settings → Devices & services → Add integration → Shield Manager** and
-enter the web UI's address. Start the web UI with `--host 0.0.0.0 --allow-from` and Home
-Assistant's IP address, so that only Home Assistant can reach it (see
-[Access and security](#access-and-security)).
-
-### What the integration adds
-
-A device for each Shield with:
-
-- **Apps installed** and **Apps behind reference** (its attributes list which apps are
-  missing, outdated, newer than the reference, or not on the reference).
-- **Reachable**, which is off when the app can't connect to that Shield.
-- **Sync from reference**, a button that installs what that Shield is behind on.
-
-And on the **Shield Manager** device:
-
-- **Reference Shield**, to pick which Shield the others copy.
-- **Activity**, what it's doing right now, such as `Installing Kodi on bedroom - 40%`.
-- **App updates available**.
-- The buttons **Sync all Shields**, **Check for app updates** and **Install app updates**.
-
-For automations there are two actions, `shield_manager.sync` and `shield_manager.install`.
-For example, to sync every Shield each night:
-
-```yaml
-automation:
-  - alias: Sync Shields nightly
-    triggers:
-      - trigger: time
-        at: "03:00:00"
-    actions:
-      - action: shield_manager.sync
-```
-
-`shield_manager.install` copies apps by package name, for example
-`packages: org.xbmc.kodi` with `devices: bedroom`. Neither action ever removes apps.
 
 ## Set up on a computer
 
@@ -211,7 +146,7 @@ Use this if you don't run Home Assistant OS, or want the command line.
    shield-manager --version
    ```
 
-   This should print `shield-manager 0.1.0`.
+   This should print `shield-manager 0.2.0`.
 
 6. Add your first Shield, using the name you want and the IP address you noted:
 
@@ -501,31 +436,23 @@ ruff check . && ruff format --check .
 pytest
 ```
 
-The Home Assistant integration's tests need Python 3.13 and Home Assistant's test tools:
-
-```sh
-pip install -e . pytest-homeassistant-custom-component
-pytest tests_ha -o asyncio_mode=auto
-```
-
 ### Release a new version
 
-Home Assistant's app store and HACS only offer a version once it's a GitHub release, and
-the app installs the code of the release tag that matches its version.
+Home Assistant offers the app's new version as soon as `ha-app/shield_manager/config.yaml`
+on `main` has it, and the app installs the code of the release tag that matches that version.
 
-1. In a pull request, set the new version (for example `0.2.0`) in all four places:
-   `pyproject.toml`, `src/shield_manager/__init__.py`,
-   `custom_components/shield_manager/manifest.json` and
-   `ha-app/shield_manager/config.yaml`. Add a `## 0.2.0` section at the top of
+1. In a pull request, set the new version (for example `0.3.0`) in all three places:
+   `pyproject.toml`, `src/shield_manager/__init__.py` and
+   `ha-app/shield_manager/config.yaml`. Add a `## 0.3.0` section at the top of
    `CHANGELOG.md`. CI fails if any of these disagree.
 2. Merge the pull request.
 3. On GitHub, open **Releases → Draft a new release**.
-4. Select **Choose a tag**, type `v0.2.0` (a `v`, then the version), and select
-   **Create new tag: v0.2.0 on publish**. Leave the target as `main`.
-5. Set the title to `v0.2.0` and paste that version's changelog section as the description.
+4. Select **Choose a tag**, type `v0.3.0` (a `v`, then the version), and select
+   **Create new tag: v0.3.0 on publish**. Leave the target as `main`.
+5. Set the title to `v0.3.0` and paste that version's changelog section as the description.
 6. Select **Publish release**.
 
-Publish right after merging. Until the tag exists, installing or rebuilding the app in Home
+Publish right after merging. Until the tag exists, installing or updating the app in Home
 Assistant fails, because it looks for the code of a release that isn't out yet.
 
 ## License

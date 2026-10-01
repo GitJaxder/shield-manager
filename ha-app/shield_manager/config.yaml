@@ -1,5 +1,5 @@
 name: Shield Manager
-version: "0.1.0"
+version: "0.2.0"
 slug: shield_manager
 description: Keep the apps on your Nvidia Shields in sync and install apps from an app-store screen
 url: https://github.com/GitJaxder/shield-manager
@@ -11,9 +11,6 @@ ingress: true
 ingress_port: 8765
 panel_icon: mdi:television-play
 panel_title: Shield Manager
-# Tells the Shield Manager integration where this app is, so it sets itself up.
-discovery:
-  - shield_manager
 # Read-only, only to copy the Android TV integration's ADB key (see use_android_tv_key).
 map:
   - type: homeassistant_config
