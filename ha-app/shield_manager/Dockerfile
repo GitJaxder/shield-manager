@@ -1,10 +1,10 @@
 FROM ghcr.io/home-assistant/base-python:3.13-alpine3.23
 
-# The app's version (from config.yaml). Using it here makes a new version download the
-# source again instead of reusing the cached install.
+# The app's version (from config.yaml), set by Home Assistant when it builds the app.
 ARG BUILD_VERSION
-# Which branch, tag or commit of shield-manager to install.
-ARG SHIELD_MANAGER_REF=main
+# Which tag, branch or commit of shield-manager to install: by default the release tag
+# matching the app's version, so every install of a version gets the same code.
+ARG SHIELD_MANAGER_REF=v${BUILD_VERSION}
 
 RUN pip install --no-cache-dir \
         "https://github.com/GitJaxder/shield-manager/archive/${SHIELD_MANAGER_REF}.tar.gz" \

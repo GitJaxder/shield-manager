@@ -22,6 +22,18 @@ jobs:
       - uses: actions/checkout@v7
       - uses: home-assistant/actions/hassfest@master
 
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hacs/action@main
+        with:
+          category: integration
+          comment: false
+          # brands: only integrations in Home Assistant's brands repository have one.
+          # topics: GitHub topics only matter for HACS's default list, not custom
+          # repositories.
+          ignore: brands topics
+
   app:
     runs-on: ubuntu-latest
     steps:
