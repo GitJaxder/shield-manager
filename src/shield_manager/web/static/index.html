@@ -849,10 +849,12 @@ function openApp(pkg) {
     return `<div class="row"><div class="grow"><strong>${esc(s.name)}</strong>${s.name === ref ? '<span class="star">REFERENCE</span>' : ""}<div style="font-size:14px">${info}</div></div>${action}</div>`;
   }).join("");
   const targets = [...missing, ...older];
+  const up = state.online.updates[pkg];
   $("#sheet-body").innerHTML = `
     ${app.banner ? `<img class="tvbanner" src="api/images/${encodeURIComponent(app.banner)}" alt="">` : ""}
     <div class="sheet-head">${tile(app)}<div style="min-width:0"><h2>${esc(app.label || app.package)}</h2><div class="pkg">${esc(app.package)}</div></div>
       <button class="close" aria-label="Close">×</button></div>
+    ${up ? `<button class="btn primary" style="width:100%;margin-bottom:12px" data-online-update="1">Update to ${esc(up.latest)} from ${esc(up.source)}</button>` : ""}
     ${targets.length > 1 ? `<button class="btn primary" style="width:100%;margin-bottom:12px" data-install="${esc(targets.join(","))}">Install on all ${targets.length} Shields that need it</button>` : ""}
     <div class="rows">${rows}</div>
     <p class="muted" style="font-size:13px;margin:12px 0 0">Installs copy the app from a Shield that already has the newest version. Removing an app deletes its data on that Shield.</p>
@@ -872,7 +874,10 @@ function openApp(pkg) {
     if (b.dataset.ghEdit) return redrawGithubSource(app, true);
     if (b.dataset.ghCancel) return redrawGithubSource(app, false);
     if (b.dataset.ghRemove) return removeGithubSource(app, b);
-    if (b.type === "submit") return;
+    if (b.dataset.onlineUpdate) {
+      if (await installOnline([pkg], b)) sheet.close();
+      return;
+    }
     if (b.dataset.install) {
       b.disabled = true;
       try {
