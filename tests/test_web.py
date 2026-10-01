@@ -210,8 +210,55 @@ def test_uninstall_reports_per_device(ui):
         "POST", "/api/uninstall", {"package": "com.plexapp.android", "devices": ["den", "living"]}
     )
     assert status == 200
-    assert [r["ok"] for r in body["results"]] == [True, False]
+    # living never had it, so there's nothing to report for it.
+    assert body["results"] == [{"package": "com.plexapp.android", "device": "den", "ok": True}]
     assert "com.plexapp.android" not in ui.installed["den"]
+
+
+def test_uninstall_several_apps(ui):
+    packages = ["org.xbmc.kodi", "com.retroarch", "com.plexapp.android"]
+    status, body = ui("POST", "/api/uninstall", {"packages": packages, "devices": ["living"]})
+    assert status == 200
+    assert {r["package"] for r in body["results"] if r["ok"]} == {"org.xbmc.kodi", "com.retroarch"}
+    assert ui.installed["living"] == {}
+
+
+def test_uninstall_unreachable_shield_reports_each_app(ui):
+    ui.registry.add(Device("attic", "10.0.0.9"))
+    body = ui("POST", "/api/uninstall", {"packages": ["a.b", "c.d"], "devices": ["attic"]})[1]
+    assert [(r["package"], r["ok"]) for r in body["results"]] == [("a.b", False), ("c.d", False)]
+
+
+def test_install_several_apps_everywhere_they_are_missing(ui):
+    packages = ["com.plexapp.android", "com.retroarch", "org.xbmc.kodi"]
+    job = ui.wait_job(ui("POST", "/api/install-from-shield", {"packages": packages})[1])
+    assert job["state"] == "done", job
+    for name in ("den", "living"):
+        assert {p: v[0] for p, v in ui.installed[name].items()} == {
+            "org.xbmc.kodi": 20,
+            "com.plexapp.android": 5,
+            "com.retroarch": 7,
+        }
+    # Only what was missing or behind was installed.
+    assert sorted((r["package"], r["device"]) for r in job["results"]) == [
+        ("com.plexapp.android", "living"),
+        ("com.retroarch", "den"),
+        ("org.xbmc.kodi", "living"),
+    ]
+
+
+def test_install_several_reports_apps_on_no_shield(ui):
+    job = ui.wait_job(ui("POST", "/api/install-from-shield", {"packages": ["gone.app"]})[1])
+    assert job["results"] == [
+        {"package": "gone.app", "ok": False, "error": "not on any reachable Shield"}
+    ]
+
+
+def test_packages_must_be_valid(ui):
+    assert ui("POST", "/api/uninstall", {"packages": "x", "devices": ["den"]})[0] == 400
+    assert (
+        ui("POST", "/api/uninstall", {"packages": ["ok.app", "b;ad"], "devices": ["den"]})[0] == 400
+    )
 
 
 def test_unreadable_app_details_are_retried_after_restart_not_every_load(ui, monkeypatch):

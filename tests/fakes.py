@@ -58,6 +58,8 @@ class FakeConnection:
             return "".join(
                 f"package:{p} versionCode:{code}\n" for p, (code, _) in self.installed.items()
             )
+        if command.startswith("pm list packages"):
+            return "".join(f"package:{p}\n" for p in self.installed)
         if command.startswith("pm path "):
             package = args[-1]
             if package not in self.installed:
