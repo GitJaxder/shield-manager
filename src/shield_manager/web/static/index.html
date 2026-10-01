@@ -339,13 +339,14 @@ const ACTIVE = new Set(["downloading", "copying", "installing", "removing"]);
 
 function stageText(st) {
   const pct = st.percent == null ? "" : ` – ${Math.round(st.percent)}%`;
+  const parts = st.parts ? ` (${st.parts})` : "";  // which parts of a bundle this Shield gets
   switch (st.stage) {
     case "queued": return st.remove ? "Waiting to remove" : "Waiting";
     case "removing": return `Removing ${st.label} from ${st.device}`;
     case "downloading": return `Downloading ${st.label}${st.source ? ` from ${st.source}` : ""}${pct}`;
-    case "copying": return `Copying ${st.label} to ${st.device}${pct}`;
-    case "installing": return `Installing ${st.label} on ${st.device}`;
-    case "done": return st.remove ? "Removed" : "Installed";
+    case "copying": return `Copying ${st.label} to ${st.device}${parts}${pct}`;
+    case "installing": return `Installing ${st.label} on ${st.device}${parts}`;
+    case "done": return st.remove ? "Removed" : `Installed${parts}`;
     case "skipped": return "Already up to date";
     // The CLI hint at the end of the error is for the terminal; the page has a button instead.
     case "failed": return `Failed: ${(st.error || "unknown error").replace(/ \(`shield-manager [^`]*` [^)]*\)/, "")}`;

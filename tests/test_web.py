@@ -221,6 +221,7 @@ def test_install_upload_of_a_bundle(ui, tmp_path, monkeypatch, filename):
     assert job["apk"]["version_name"] == "1.3.32"
     job = ui.wait_job(job)
     assert [r["ok"] for r in job["results"]] == [True, True], job
+    assert {st["parts"] for st in job["steps"]} == {"base + armeabi-v7a + xhdpi"}
 
 
 def test_install_rejects_non_apk(ui):

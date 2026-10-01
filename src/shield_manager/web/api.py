@@ -78,6 +78,7 @@ def _step_reporter(steps: list[Step]) -> Callable[[Any], None]:
         if phase in (DOWNLOADING, COPYING, INSTALLING):
             for step in steps:
                 step.update(phase, event.percent)
+                step.parts = getattr(event, "parts", "") or step.parts
 
     return report
 
