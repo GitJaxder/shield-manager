@@ -134,7 +134,8 @@ newer versions of open-source apps when it opens (at most every 6 hours, or when
 again**); apps with one show "Update available: 1.0 → 1.1" and appear under **Updates**. Press **Update all** in the banner, or tick apps and press **Update**, to install them as
 `fleet updates --install` does (see [Checking for updates](#checking-for-updates)). The **Shields** tab adds, groups and
 removes Shields, picks the reference, checks a connection, lists each Shield's apps (system
-apps too, if you tick the box), and installs an APK file you upload.
+apps too, if you tick the box), and installs an APK or APK bundle (.apkm, .xapk, .apks) you
+upload.
 
 **Sync now** opens a preview of what each Shield would get from the reference, like `fleet
 status`. Tick the Shields to sync and, as with `fleet sync`'s options, choose whether to also

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from shield_manager import bundle
 from shield_manager.appinfo import IMAGE_TYPES
 from shield_manager.registry import Registry
 from shield_manager.sources import Downloader
@@ -29,6 +30,7 @@ from shield_manager.web.api import Api, ApiError, Connector
 CSRF_HEADER = "X-Shield-Manager"
 CSP = "default-src 'self' 'unsafe-inline'; img-src 'self' data:"
 MAX_APK_BYTES = 4 * 1024**3
+UPLOAD_SUFFIXES = (".apk", *bundle.SUFFIXES)
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
@@ -112,7 +114,8 @@ class Handler(BaseHTTPRequestHandler):
             case "POST", ["install"]:
                 names = [n for v in query.get("devices", []) for n in v.split(",") if n]
                 allow_downgrade = (query.get("allow_downgrade") or ["0"])[0] == "1"
-                return api.install_upload(self._receive_apk(), names, allow_downgrade)
+                filename = (query.get("filename") or [""])[0]
+                return api.install_upload(self._receive_apk(filename), names, allow_downgrade)
             case "POST", ["sync"]:
                 return api.sync(self._json_body())
             case "GET", ["online-updates"]:
@@ -157,14 +160,18 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "body must be a JSON object")
         return body
 
-    def _receive_apk(self) -> Path:
-        """Stream the raw request body (the APK file) into a new temporary directory."""
+    def _receive_apk(self, filename: str = "") -> Path:
+        """Stream the raw request body (an APK or bundle file) into a new temporary
+        directory, keeping a known suffix from the uploaded file's name."""
         length = self._content_length()
         if length <= 0:
             raise ApiError(HTTPStatus.BAD_REQUEST, "send the APK as the request body")
         if length > MAX_APK_BYTES:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "APK too large")
-        path = Path(tempfile.mkdtemp(prefix="shield-manager-")) / "upload.apk"
+        suffix = Path(filename).suffix.lower()
+        if suffix not in UPLOAD_SUFFIXES:
+            suffix = ".apk"
+        path = Path(tempfile.mkdtemp(prefix="shield-manager-")) / f"upload{suffix}"
         with path.open("wb") as f:
             remaining = length
             while remaining:

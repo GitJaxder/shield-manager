@@ -204,6 +204,25 @@ def test_install_upload(ui, tmp_path):
     assert [r["ok"] for r in job["results"]] == [True, True], job
 
 
+@pytest.mark.parametrize("filename", ["steamlink.apkm", "steamlink.xapk", "upload"])
+def test_install_upload_of_a_bundle(ui, tmp_path, monkeypatch, filename):
+    from shield_manager import deploy
+    from tests.test_bundle import PKG, make_apkm
+
+    monkeypatch.setattr(deploy, "device_abis", lambda conn: ["armeabi-v7a", "armeabi"])
+
+    path = make_apkm(tmp_path)
+    for name in ("den", "living"):
+        ui.installed[name][PKG] = (5000315, "1.3.32")  # what the device reports after
+    status, job = ui(
+        "POST", f"/api/install?devices=den,living&filename={filename}", raw=path.read_bytes()
+    )
+    assert status == 200 and job["apk"]["package"] == PKG
+    assert job["apk"]["version_name"] == "1.3.32"
+    job = ui.wait_job(job)
+    assert [r["ok"] for r in job["results"]] == [True, True], job
+
+
 def test_install_rejects_non_apk(ui):
     status, body = ui("POST", "/api/install?devices=den", raw=b"not a zip")
     assert status == 400 and "not a valid APK" in body["error"]

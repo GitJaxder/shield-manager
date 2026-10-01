@@ -250,7 +250,8 @@
 
     <div class="section-title">Install an APK file</div>
     <form class="panel pad" id="install">
-      <input type="file" name="apk" accept=".apk" required style="max-width:100%">
+      <input type="file" name="apk" accept=".apk,.apkm,.xapk,.apks" required style="max-width:100%">
+      <p class="muted" style="margin:8px 0 0;font-size:13px">An .apk, or a bundle from APKMirror (.apkm), APKPure (.xapk) or bundletool (.apks). Each Shield gets the parts built for its CPU type.</p>
       <div class="checks" id="install-targets" style="margin:12px 0"></div>
       <label class="muted"><input type="checkbox" name="downgrade"> Allow downgrade</label>
       <div style="margin-top:12px"><button class="btn primary">Install</button></div>
@@ -1096,8 +1097,8 @@ $("#install").addEventListener("submit", async (ev) => {
   b.disabled = true;
   b.textContent = "Uploading…";
   try {
-    const q = new URLSearchParams({devices: targets.join(","), allow_downgrade: form.elements.downgrade.checked ? "1" : "0"});
-    track(await api("POST", "install?" + q, file, {"Content-Type": "application/vnd.android.package-archive"}));
+    const q = new URLSearchParams({devices: targets.join(","), allow_downgrade: form.elements.downgrade.checked ? "1" : "0", filename: file.name});
+    track(await api("POST", "install?" + q, file, {"Content-Type": "application/octet-stream"}));
     form.reset();
     renderDevices();
   } catch (e) { notice(e.message, "err"); } finally { b.disabled = false; b.textContent = "Install"; }
