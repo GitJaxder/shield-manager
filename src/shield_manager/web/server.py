@@ -136,12 +136,6 @@ class Handler(BaseHTTPRequestHandler):
                 return api.open_store_page(self._json_body())
             case "POST", ["uninstall"]:
                 return api.uninstall(self._json_body())
-            case "GET", ["settings"]:
-                return api.settings_info()
-            case "POST", ["settings", "status"]:
-                return api.settings_status(self._json_body())
-            case "POST", ["settings", "sync"]:
-                return api.settings_sync(self._json_body())
             case "GET", ["jobs"]:
                 return api.list_jobs()
             case "GET", ["jobs", job_id]:

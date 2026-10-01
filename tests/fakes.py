@@ -1,4 +1,3 @@
-import shlex
 import zipfile
 from pathlib import Path
 
@@ -16,15 +15,7 @@ class FakeConnection:
     the Play Store delivers apps.
     """
 
-    def __init__(
-        self,
-        responses=None,
-        installed=None,
-        splits=None,
-        abis=None,
-        apk_files=None,
-        settings=None,
-    ):
+    def __init__(self, responses=None, installed=None, splits=None, abis=None, apk_files=None):
         self.responses = responses or {}
         self.installed = dict(installed or {})  # package -> (version_code, version_name)
         self.splits = splits or {}  # package -> extra split APK names
@@ -35,7 +26,6 @@ class FakeConnection:
         self.closed = False
         self.abis = list(abis or [])
         self.apk_files = apk_files or {}  # package -> real APK file served as its base.apk
-        self.settings = dict(settings or {})  # (table, name) -> value
 
     def push(self, local_path, device_path, progress_callback=None, **kwargs):
         self.pushed.append((local_path, device_path))
@@ -90,8 +80,6 @@ class FakeConnection:
             if command.startswith(prefix):
                 return response
         args = command.split()
-        if command.startswith("settings "):
-            return self._settings(shlex.split(command)[1:])
         if command == "getprop ro.product.cpu.abilist":
             return ",".join(self.abis)
         if command.startswith("dumpsys package "):
@@ -134,16 +122,6 @@ class FakeConnection:
             if self.installed.pop(args[-1], None) is None:
                 return "Failure [DELETE_FAILED_INTERNAL_ERROR]"
             return "Success"
-        return ""
-
-    def _settings(self, args):
-        verb, table = args[0], args[1]
-        if verb == "list":
-            return "".join(f"{n}={v}\n" for (t, n), v in self.settings.items() if t == table)
-        if verb == "get":
-            return self.settings.get((table, args[2]), "null") + "\n"
-        if verb == "put":
-            self.settings[(table, args[2])] = args[3]
         return ""
 
     def close(self):

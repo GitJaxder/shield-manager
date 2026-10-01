@@ -147,12 +147,6 @@ the app's releases come from (owner/name or the repo's URL, plus an optional fil
 pattern), like `source set` and `source remove`. The update check re-runs right after. Cards
 name the repo, and the **From GitHub** filter lists every app with a source (`source list`).
 
-The **Settings** tab compares each Shield's settings with the reference's, like `settings
-status`, for the kinds of settings you tick (the defaults match `settings sync`'s). It lists
-each difference with both values, says why a setting can't be copied yet, and keeps other
-differences in a collapsed list. **Sync settings** copies them to the Shields you tick, with
-a progress row per setting.
-
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
 at the bottom shows each app on each Shield moving through Downloading, Copying and Installing,
 with a percentage where the transfer reports one. App names and icons
@@ -279,61 +273,6 @@ built in.
 the built-in ones too. Sources are saved in `~/.config/shield-manager/app-sources.json`.
 Downloads are still only installed when they're signed by the same developer as the copy on
 your Shields.
-
-## Syncing settings
-
-Settings follow the same reference Shield as apps (set it with `fleet set-reference`). Each
-step below is a command to run in the terminal where shield-manager is installed.
-
-1. See which settings can be synced, grouped by category:
-
-   ```sh
-   shield-manager settings list
-   ```
-
-2. Compare every Shield with the reference. Nothing is changed:
-
-   ```sh
-   shield-manager settings status
-   ```
-
-   Each differing setting is shown with both values, for example
-   `Start screensaver after: 5 min here, 15 min on the reference`.
-
-3. Preview, then copy the reference's settings to the other Shields:
-
-   ```sh
-   shield-manager settings sync --dry-run
-   shield-manager settings sync
-   ```
-
-   It prints each setting as it's set, e.g. `bedroom: setting Font size (3/7) - 42%`, and
-   checks that the Shield kept the new value.
-
-By default it syncs the screensaver and sleep timers, animation speeds, clock format, font
-size, caption style, accessibility options and services, keyboards, HDMI-CEC options and
-system sounds. Surround sound formats depend on the TV or receiver each Shield is plugged
-into, so they're only synced when asked for: `shield-manager settings sync -c surround`.
-`-c` picks categories (repeatable), and `-d`/`-g`/`--all` and `--from NAME` work as for
-`fleet`.
-
-What it won't do:
-
-- Settings that name an app (a screensaver, keyboard or accessibility service such as Button
-  Mapper) are only set on Shields that have that app. Run `fleet sync` first.
-- A setting the reference has never changed is left as is.
-- Settings that belong to one Shield, or keep it on the network and connected to ADB (its
-  name, IDs, Wi-Fi, Bluetooth, developer and debugging options), are never synced.
-- App data (logins, in-app preferences) isn't synced; Android only lets ADB read it with
-  root.
-
-To find other settings worth syncing (for example Nvidia's own), list everything else that
-differs, then sync one by name:
-
-```sh
-shield-manager settings status --others -d bedroom
-shield-manager settings sync --key global/SETTING_NAME
-```
 
 ## Development
 
