@@ -231,13 +231,37 @@ Other apps can't be checked yet. Updates
 are installed on every Shield that has the app, with the build for its CPU type, and only
 when the download is signed by the same developer as the installed copy.
 
-To teach it more open-source apps, create a file called `app-sources.json` next to
-`devices.json` in `~/.config/shield-manager/`, listing each app's package name and GitHub
-repository:
+### Choosing GitHub sources
 
-```json
-{"github": {"org.example.app": "example/app-repo"}}
-```
+Like Obtainium, you can tell shield-manager which GitHub repository publishes an app. Sync
+then downloads it from there when no Shield has a copy a Shield can run, and
+`fleet updates` checks it for newer versions. SmartTube and the Home Assistant app are
+built in.
+
+1. Find the app's package name. It's in `shield-manager app list -d living-room`, or in the
+   app's Play Store web address after `id=`.
+2. Find the repository that publishes the app's APK files under **Releases**, for example
+   <https://github.com/yuliskov/SmartTube>.
+3. Set it:
+
+   ```sh
+   shield-manager source set org.example.app https://github.com/example/app
+   ```
+
+   If the repository publishes several apps or variants, add `--asset` with a pattern the
+   right files' names match, for example `--asset tv`. The pattern is a regular expression
+   and ignores upper and lower case.
+
+4. Check it:
+
+   ```sh
+   shield-manager source list
+   ```
+
+`shield-manager source remove org.example.app` stops using GitHub for that app. It works for
+the built-in ones too. Sources are saved in `~/.config/shield-manager/app-sources.json`.
+Downloads are still only installed when they're signed by the same developer as the copy on
+your Shields.
 
 ## Development
 

@@ -144,6 +144,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_args(updates)
 
+    source = sub.add_parser(
+        "source", help="choose GitHub repositories to download apps and updates from"
+    )
+    source_sub = source.add_subparsers(dest="action", required=True)
+    source_set = source_sub.add_parser(
+        "set", help="download an app from a GitHub repository's releases"
+    )
+    source_set.add_argument("package", help="the app's package name, e.g. org.xbmc.kodi")
+    source_set.add_argument("repo", help="owner/name, or the repository's GitHub URL")
+    source_set.add_argument(
+        "--asset",
+        metavar="PATTERN",
+        help="only use release files whose names match this regular expression "
+        "(for repositories that publish several apps or variants)",
+    )
+    source_sub.add_parser("list", help="list the apps with a GitHub source")
+    source_remove = source_sub.add_parser("remove", help="stop downloading an app from GitHub")
+    source_remove.add_argument("package")
+
     web = sub.add_parser("web", help="serve the web UI")
     web.add_argument("--host", default="127.0.0.1", help="address to bind (default: localhost)")
     web.add_argument("--port", type=int, default=8765)
@@ -384,6 +403,37 @@ def _describe(drift) -> str:
     return f"{drift.package}: {label}"
 
 
+def _run_source(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager.sources import Downloader
+
+    downloads = Downloader.from_config(registry.path.parent)
+    if args.action == "set":
+        try:
+            src = downloads.set_github_source(args.package, args.repo, args.asset)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        only = f" (files matching {src.asset})" if src.asset else ""
+        print(f"{args.package}: GitHub releases of {src.repo}{only}")
+        print(
+            "Sync uses it when no Shield has a copy a Shield can run, and "
+            "`shield-manager fleet updates` checks it for newer versions."
+        )
+    elif args.action == "remove":
+        if not downloads.remove_github_source(args.package):
+            print(f"error: {args.package} has no GitHub source", file=sys.stderr)
+            return 1
+        print(f"{args.package}: no longer downloaded from GitHub")
+    else:  # list
+        for pkg, src in downloads.github_sources().items():
+            notes = [f"files matching {src.asset}"] if src.asset else []
+            if src.builtin:
+                notes.append("built in")
+            extra = f" ({', '.join(notes)})" if notes else ""
+            print(f"{pkg}\thttps://github.com/{src.repo}{extra}")
+    return 0
+
+
 def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
     from shield_manager import adb, fleet
     from shield_manager.sources import Downloader
@@ -497,6 +547,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_app(args, registry)
         elif args.command == "fleet":
             return _run_fleet(args, registry)
+        elif args.command == "source":
+            return _run_source(args, registry)
         elif args.command == "web":
             return _serve_web(args, registry)
     except DeviceExistsError as e:
