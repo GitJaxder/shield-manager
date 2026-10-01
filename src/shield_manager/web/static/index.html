@@ -112,11 +112,11 @@
   @media (max-width: 520px) { #devices .row { flex-wrap: wrap; } #devices .actions { width: 100%; justify-content: flex-start; } }
   /* jobs tray */
   #tray { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom));
-    width: min(520px, calc(100% - 24px)); display: grid; gap: 8px; z-index: 20; }
+    width: min(520px, calc(100% - 24px)); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; z-index: 20; }
   .job { background: var(--text); color: var(--bg); border-radius: 12px; padding: 10px 14px;
     display: flex; gap: 10px; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
   .job .grow { flex: 1; min-width: 0; }
-  .job small { opacity: .75; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job small { opacity: .75; display: block; overflow-wrap: anywhere; }
   .job button { background: none; border: none; color: inherit; cursor: pointer; font-size: 18px; }
   #tray { max-height: 70vh; overflow-y: auto; }
   .job.has-steps { flex-direction: column; align-items: stretch; gap: 8px; }
@@ -270,6 +270,14 @@ async function api(method, path, body, headers = {}) {
   return data;
 }
 
+function removeFailures(done, bad) {
+  const where = listOf(bad.map((r) => r.device));
+  const errors = [...new Set(bad.map((r) => r.error))];
+  // Same error everywhere (usually an unreachable Shield): say it once.
+  const why = errors.length === 1 ? `: ${errors[0]}` : "";
+  return `${done ? `Removed ${done}. ` : ""}Couldn't remove ${plural(bad.length, "app")} on ${where}${why}`;
+}
+
 // ---- notices & background jobs ----------------------------------------------------
 function notice(text, kind = "", ms = 5000) {
   const el = document.createElement("div");
@@ -280,14 +288,31 @@ function notice(text, kind = "", ms = 5000) {
   if (ms) setTimeout(() => el.remove(), ms);
 }
 
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const listOf = (items) => [...new Set(items)].join(", ");
+
+// One short line for a finished job; the per-app rows below it carry the errors.
 function summarize(job) {
   if (job.error) return job.error;
+  const steps = job.steps || [];
+  const failed = steps.filter((x) => x.stage === "failed");
+  if (failed.length) {
+    const ok = steps.filter((x) => x.stage === "done").length;
+    const where = listOf(failed.map((x) => x.device));
+    return ok
+      ? `${ok} installed, ${failed.length} failed on ${where}`
+      : `${failed.length} of ${steps.length} failed on ${where}`;
+  }
   const bad = job.results.filter((r) => !r.ok);
   const done = job.results.filter((r) => r.ok && !r.skipped);
   const who = (r) => [r.package && appLabel(r.package), r.device].filter(Boolean).join(" on ");
   if (bad.length) {
-    const msg = bad.map((r) => `${who(r)}: ${r.error || Object.values(r.failed || {})[0] || "failed"}`).join("; ");
-    return done.length ? `${done.length} done, ${bad.length} failed. ${msg}` : msg;
+    if (bad.length === 1) {
+      const r = bad[0];
+      return `${who(r)}: ${r.error || Object.values(r.failed || {})[0] || "failed"}`;
+    }
+    const where = listOf(bad.map((r) => r.device).filter(Boolean));
+    return `${done.length ? `${done.length} done, ` : ""}${bad.length} failed${where ? ` on ${where}` : ""}`;
   }
   if (!job.results.length) return "Nothing to do, already up to date";
   if (done.some((r) => r.package)) return `${done.length} install${done.length > 1 ? "s" : ""} done`;
@@ -632,7 +657,7 @@ $("#sel-remove").onclick = () => {
       const res = await api("POST", "uninstall", {packages, devices: picked()});
       const bad = res.results.filter((r) => !r.ok);
       const done = res.results.filter((r) => r.ok).length;
-      notice(bad.length ? `Removed ${done}. Failed: ${bad.map((r) => `${appLabel(r.package)} on ${r.device}: ${r.error}`).join("; ")}` : `Removed ${done} app${done === 1 ? "" : "s"}`, "", bad.length ? 0 : 5000);
+      notice(bad.length ? removeFailures(done, bad) : `Removed ${plural(done, "app")}`, "", bad.length ? 0 : 5000);
       sheet.close();
       clearSelection();
       loadCatalog();
