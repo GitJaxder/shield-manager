@@ -17,8 +17,8 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from shield_manager import appinfo, deploy, fleet, screen
-from shield_manager.apk import ApkError, read_apk_info
+from shield_manager import appinfo, bundle, deploy, fleet, screen
+from shield_manager.apk import ApkError
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
     Device,
@@ -78,6 +78,7 @@ def _step_reporter(steps: list[Step]) -> Callable[[Any], None]:
         if phase in (DOWNLOADING, COPYING, INSTALLING):
             for step in steps:
                 step.update(phase, event.percent)
+                step.parts = getattr(event, "parts", "") or step.parts
 
     return report
 
@@ -516,10 +517,11 @@ class Api:
         return self.jobs.start(f"Install {what} on {where}", work).to_dict()
 
     def install_upload(self, apk_path: Path, names: list[str], allow_downgrade: bool) -> dict:
-        """Install an uploaded APK. Takes ownership of apk_path's directory."""
+        """Install an uploaded APK or APK bundle (.apkm, .xapk, .apks). Takes ownership of
+        apk_path's directory."""
         try:
             targets = self._resolve(names)
-            info = read_apk_info(apk_path)
+            info = bundle.app_info(apk_path)
         except (ApiError, ApkError) as e:
             shutil.rmtree(apk_path.parent, ignore_errors=True)
             if isinstance(e, ApkError):

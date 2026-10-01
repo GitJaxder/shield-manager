@@ -38,6 +38,7 @@ class Step:
     store: bool = False  # failed because no copy fits; the Play Store page can install it
     download_page: str | None = None  # where to download a build that fits, by hand
     download_site: str | None = None  # "APKMirror" etc.; None when download_page is a search
+    parts: str = ""  # for split APKs and bundles, e.g. "base + armeabi-v7a + xhdpi"
     remove: bool = False  # removes the app instead of installing it
 
     def update(self, stage: str, percent: float | None = None, error: str | None = None) -> None:
@@ -55,6 +56,7 @@ class Step:
             "store": self.store,
             "download_page": self.download_page,
             "download_site": self.download_site,
+            "parts": self.parts,
             "remove": self.remove,
         }
 

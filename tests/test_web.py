@@ -67,7 +67,7 @@ def ui(tmp_path, monkeypatch):
         raise AssertionError("job didn't finish")
 
     request.registry, request.installed, request.wait_job = registry, installed, wait_job
-    request.api = server.api
+    request.api, request.server = server.api, server
     yield request
     server.shutdown()
     server.server_close()
@@ -202,6 +202,26 @@ def test_install_upload(ui, tmp_path):
     assert status == 200 and job["apk"]["package"] == "com.example.tv"
     job = ui.wait_job(job)
     assert [r["ok"] for r in job["results"]] == [True, True], job
+
+
+@pytest.mark.parametrize("filename", ["steamlink.apkm", "steamlink.xapk", "upload"])
+def test_install_upload_of_a_bundle(ui, tmp_path, monkeypatch, filename):
+    from shield_manager import deploy
+    from tests.test_bundle import PKG, make_apkm
+
+    monkeypatch.setattr(deploy, "device_abis", lambda conn: ["armeabi-v7a", "armeabi"])
+
+    path = make_apkm(tmp_path)
+    for name in ("den", "living"):
+        ui.installed[name][PKG] = (5000315, "1.3.32")  # what the device reports after
+    status, job = ui(
+        "POST", f"/api/install?devices=den,living&filename={filename}", raw=path.read_bytes()
+    )
+    assert status == 200 and job["apk"]["package"] == PKG
+    assert job["apk"]["version_name"] == "1.3.32"
+    job = ui.wait_job(job)
+    assert [r["ok"] for r in job["results"]] == [True, True], job
+    assert {st["parts"] for st in job["steps"]} == {"base + armeabi-v7a + xhdpi"}
 
 
 def test_install_rejects_non_apk(ui):
@@ -372,6 +392,32 @@ def test_now_showing_reports_each_shield_and_serves_its_screenshot(ui, monkeypat
     # A second look straight away reuses the capture instead of taking another.
     ui("GET", "/api/now-showing")
     assert len(captures) == 2
+
+
+def test_a_page_that_hangs_up_early_is_not_an_error(ui, monkeypatch):
+    import socket
+
+    gate = threading.Event()
+    calls = []
+
+    def slow_catalog():
+        calls.append(1)
+        gate.wait(5)
+        return {"apps": []}
+
+    monkeypatch.setattr(ui.api, "catalog", slow_catalog)
+    errors = []
+    monkeypatch.setattr(ui.server, "handle_error", lambda req, addr: errors.append(addr))
+    s = socket.create_connection(("127.0.0.1", ui.server.server_port))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+    s.sendall(b"GET /api/catalog HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    while not calls:
+        time.sleep(0.01)
+    s.close()  # like a reload: resets the connection before the answer is written
+    gate.set()
+    time.sleep(0.3)
+    assert errors == []
+    assert ui("GET", "/api/devices")[0] == 200  # still serving
 
 
 def test_now_showing_skips_the_screenshot_while_asleep(ui, monkeypatch):
