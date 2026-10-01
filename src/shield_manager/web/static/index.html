@@ -326,9 +326,9 @@ function stageText(st) {
   const pct = st.percent == null ? "" : ` – ${Math.round(st.percent)}%`;
   switch (st.stage) {
     case "queued": return "Waiting";
-    case "downloading": return `Downloading ${st.label}${pct}`;
-    case "copying": return `Copying to ${st.device}${pct}`;
-    case "installing": return `Installing ${st.label}`;
+    case "downloading": return `Downloading ${st.label}${st.source ? ` from ${st.source}` : ""}${pct}`;
+    case "copying": return `Copying ${st.label} to ${st.device}${pct}`;
+    case "installing": return `Installing ${st.label} on ${st.device}`;
     case "done": return "Installed";
     case "skipped": return "Already up to date";
     case "failed": return `Failed: ${st.error || "unknown error"}`;
