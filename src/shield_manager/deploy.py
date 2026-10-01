@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import shlex
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +24,74 @@ class Connection(Protocol):
 
 
 class DeployError(Exception):
+    pass
+
+
+class Phase(str, Enum):
+    DOWNLOADING = "downloading"  # copying an app's APK files off a (reference) Shield
+    COPYING = "copying"  # copying APK files onto the Shield being installed to
+    INSTALLING = "installing"  # the Shield's package manager is installing the app
+    REMOVING = "removing"
+    DONE = "done"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class Progress:
+    """One step of an install, update or removal, for progress displays.
+
+    done and total are bytes for DOWNLOADING and COPYING and 0 otherwise. device is set
+    by callers that work across several Shields (fleet.sync).
+    """
+
+    package: str
+    phase: Phase
+    done: int = 0
+    total: int = 0
+    device: str | None = None
+    message: str = ""
+
+    @property
+    def percent(self) -> int | None:
+        if self.phase in (Phase.DOWNLOADING, Phase.COPYING) and self.total:
+            return min(100, self.done * 100 // self.total)
+        return None
+
+    def describe(self) -> str:
+        """Software-Center-style text, e.g. "Downloading org.xbmc.kodi - 40%"."""
+        text = f"{self.phase.value.capitalize()} {self.package}"
+        if self.percent is not None:
+            text += f" - {self.percent}%"
+        if self.message:
+            text += f": {self.message}"
+        return text
+
+
+ProgressCallback = Callable[[Progress], None]
+
+
+class _Transfer:
+    """Turns adb-shell's per-chunk callbacks into whole-percent Progress events."""
+
+    def __init__(self, package: str, phase: Phase, total: int, progress: ProgressCallback):
+        self.base = Progress(package, phase, 0, total)
+        self.progress = progress
+        self.done = 0
+        self.last_percent = -1
+        self._emit()
+
+    def chunk(self, _path: str, size: int, _file_total: int) -> None:
+        self.done += size
+        self._emit()
+
+    def _emit(self) -> None:
+        event = replace(self.base, done=min(self.done, self.base.total))
+        if event.percent != self.last_percent:
+            self.last_percent = event.percent
+            self.progress(event)
+
+
+def _ignore(_: Progress) -> None:
     pass
 
 
@@ -48,12 +117,15 @@ def install(
     package: str,
     version_code: int,
     allow_downgrade: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> InstalledVersion:
     """Install or update an app and confirm the device now reports the expected version.
 
     Pass several paths for a split APK (a base.apk plus its config splits), as pulled from
-    an app installed through the Play Store.
+    an app installed through the Play Store. progress, if given, receives COPYING events
+    with byte counts, then INSTALLING, then DONE.
     """
+    progress = progress or _ignore
     paths = (
         [Path(apk_paths)] if isinstance(apk_paths, (str, Path)) else [Path(p) for p in apk_paths]
     )
@@ -63,8 +135,12 @@ def install(
     flags = "-r -d" if allow_downgrade else "-r"
     long_op = {"read_timeout_s": INSTALL_TIMEOUT_S, "timeout_s": INSTALL_TIMEOUT_S}
     try:
+        copy = _Transfer(package, Phase.COPYING, _local_size(paths), progress)
         for local, remote in zip(paths, remotes, strict=True):
-            conn.push(str(local), remote, read_timeout_s=INSTALL_TIMEOUT_S)
+            conn.push(
+                str(local), remote, read_timeout_s=INSTALL_TIMEOUT_S, progress_callback=copy.chunk
+            )
+        progress(Progress(package, Phase.INSTALLING))
         if len(paths) == 1:
             out = _shell(conn, f"pm install {flags} {shlex.quote(remotes[0])}", **long_op)
         else:
@@ -80,6 +156,7 @@ def install(
         raise DeployError(
             f"installed, but device reports versionCode {found} (expected {version_code})"
         )
+    progress(Progress(package, Phase.DONE))
     return version
 
 
@@ -108,10 +185,13 @@ def _shell(conn: Connection, command: str, **kwargs) -> str:
     return str(conn.shell(command, **kwargs)).strip()
 
 
-def uninstall(conn: Connection, package: str) -> None:
+def uninstall(conn: Connection, package: str, progress: ProgressCallback | None = None) -> None:
+    progress = progress or _ignore
+    progress(Progress(package, Phase.REMOVING))
     out = str(conn.shell(f"pm uninstall {shlex.quote(package)}")).strip()
     if "Success" not in out:
         raise DeployError(out or "pm uninstall gave no output")
+    progress(Progress(package, Phase.DONE))
 
 
 def list_packages(conn: Connection, include_system: bool = False) -> list[str]:
@@ -135,8 +215,13 @@ def package_versions(conn: Connection) -> dict[str, int]:
     return versions
 
 
-def pull_app(conn: Connection, package: str, dest_dir: Path) -> list[Path]:
-    """Copy an installed app's APK files (base plus any splits) off the device."""
+def pull_app(
+    conn: Connection, package: str, dest_dir: Path, progress: ProgressCallback | None = None
+) -> list[Path]:
+    """Copy an installed app's APK files (base plus any splits) off the device.
+
+    progress, if given, receives DOWNLOADING events with byte counts.
+    """
     out = str(conn.shell(f"pm path {shlex.quote(package)}"))
     remotes = [
         line.removeprefix("package:").strip()
@@ -146,9 +231,24 @@ def pull_app(conn: Connection, package: str, dest_dir: Path) -> list[Path]:
     if not remotes:
         raise DeployError(f"{package} is not installed on the reference device")
     dest_dir.mkdir(parents=True, exist_ok=True)
+    total = _remote_size(conn, remotes) if progress else 0
+    download = _Transfer(package, Phase.DOWNLOADING, total, progress or _ignore)
     local_paths = []
     for remote in remotes:
         local = dest_dir / Path(remote).name
-        conn.pull(remote, str(local), read_timeout_s=INSTALL_TIMEOUT_S)
+        conn.pull(
+            remote, str(local), read_timeout_s=INSTALL_TIMEOUT_S, progress_callback=download.chunk
+        )
         local_paths.append(local)
     return local_paths
+
+
+def _local_size(paths: list[Path]) -> int:
+    return sum(p.stat().st_size for p in paths if p.exists())
+
+
+def _remote_size(conn: Connection, remotes: list[str]) -> int:
+    """Total size in bytes of files on the device, or 0 if it can't be read."""
+    out = str(conn.shell("stat -c %s " + " ".join(shlex.quote(r) for r in remotes)))
+    sizes = [int(line) for line in out.split() if line.isdigit()]
+    return sum(sizes) if len(sizes) == len(remotes) else 0

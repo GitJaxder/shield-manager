@@ -9,12 +9,12 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
 from shield_manager import deploy
-from shield_manager.deploy import Connection
+from shield_manager.deploy import Connection, Phase, Progress, ProgressCallback
 from shield_manager.registry import Device
 
 Connector = Callable[[Device], Connection]
@@ -75,6 +75,12 @@ def compare(reference: dict[str, int], device: dict[str, int]) -> list[Drift]:
     return drift
 
 
+def _for_device(progress: ProgressCallback | None, name: str) -> ProgressCallback | None:
+    if progress is None:
+        return None
+    return lambda event: progress(replace(event, device=name))
+
+
 @contextmanager
 def _connected(connect: Connector, device: Device) -> Iterator[Connection]:
     conn = connect(device)
@@ -112,12 +118,17 @@ def sync(
     allow_downgrade: bool = False,
     dry_run: bool = False,
     cache_dir: Path | None = None,
+    progress: ProgressCallback | None = None,
 ) -> list[DeviceReport]:
     """Make each target's apps match the reference.
 
     Missing and outdated apps are copied from the reference. Apps that are newer on a
     target are left alone unless allow_downgrade is set, and apps the reference doesn't
     have are only removed when prune is set, because removing an app deletes its data.
+
+    progress, if given, receives deploy.Progress events with device set to the Shield
+    being updated (including while an app is downloaded from the reference for it), and a
+    FAILED event when an app can't be installed or removed.
     """
     reports = status(reference, targets, connect)
     wanted = {Change.INSTALL, Change.UPDATE} | ({Change.NEWER} if allow_downgrade else set())
@@ -127,10 +138,12 @@ def sync(
     with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
         pulled: dict[str, list[Path]] = {}
 
-        def apks_for(package: str) -> list[Path]:
+        def apks_for(package: str, on_progress: ProgressCallback | None) -> list[Path]:
             if package not in pulled:
                 with _connected(connect, reference) as ref_conn:
-                    pulled[package] = deploy.pull_app(ref_conn, package, Path(tmp) / package)
+                    pulled[package] = deploy.pull_app(
+                        ref_conn, package, Path(tmp) / package, progress=on_progress
+                    )
             return pulled[package]
 
         for report in reports:
@@ -143,25 +156,33 @@ def sync(
             ]
             if not todo:
                 continue
+            on_progress = _for_device(progress, report.device.name)
             try:
                 with _connected(connect, report.device) as conn:
                     for d in todo:
                         try:
                             if d.change is Change.EXTRA:
-                                deploy.uninstall(conn, d.package)
+                                deploy.uninstall(conn, d.package, progress=on_progress)
                                 report.applied[d.package] = "removed"
                             else:
                                 deploy.install(
                                     conn,
-                                    apks_for(d.package),
+                                    apks_for(d.package, on_progress),
                                     d.package,
                                     d.reference_version,
                                     allow_downgrade=d.change is Change.NEWER,
+                                    progress=on_progress,
                                 )
                                 verb = _PAST_TENSE[d.change]
                                 report.applied[d.package] = f"{verb} {d.reference_version}"
                         except Exception as e:
                             report.failed[d.package] = str(e) or type(e).__name__
+                            if on_progress:
+                                on_progress(
+                                    Progress(
+                                        d.package, Phase.FAILED, message=report.failed[d.package]
+                                    )
+                                )
             except Exception as e:
                 report.error = str(e) or type(e).__name__
     return reports

@@ -104,6 +104,9 @@ shield-manager app list -d living-room             # third-party apps (--system 
 shield-manager app uninstall org.xbmc.kodi -d den
 ```
 
+While it works, installs, removals and `fleet sync` show live progress such as
+`den: Downloading org.xbmc.kodi - 40%`, then `Copying`, then `Installing`.
+
 After an install the tool checks that each device reports the APK's `versionCode`. Devices are
 handled one at a time; an unreachable device is reported and the rest still run, and the
 command exits non-zero if any device failed.
