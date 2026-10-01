@@ -153,61 +153,6 @@ one-off reference, or `-d`/`-g`/`--all` to limit which Shields are checked.
 Apps copied this way are sideloaded, so paid apps that check their Play Store licence may
 refuse to run until they are installed from the Play Store on that Shield.
 
-## Tab completion
-
-Press Tab to complete commands, device names, group names and app package names. For example,
-`shield-manager app uninstall org.x` then Tab becomes `shield-manager app uninstall org.xbmc.kodi`.
-
-Set it up once, in a terminal where the environment from install step 3 is active. Use the
-steps for your shell. If you're not sure which shell you have, run `echo $SHELL`. On Windows
-it's PowerShell, and on a Mac it's usually zsh.
-
-**bash:**
-
-```sh
-shield-manager completion bash > ~/.shield-manager-completion.bash
-echo 'source ~/.shield-manager-completion.bash' >> ~/.bashrc
-```
-
-**zsh:**
-
-```sh
-shield-manager completion zsh > ~/.shield-manager-completion.zsh
-echo 'autoload -U compinit && compinit' >> ~/.zshrc
-echo 'source ~/.shield-manager-completion.zsh' >> ~/.zshrc
-```
-
-If your `~/.zshrc` already runs `compinit` (Oh My Zsh does), skip the middle line.
-
-**fish:**
-
-```sh
-mkdir -p ~/.config/fish/completions
-shield-manager completion fish > ~/.config/fish/completions/shield-manager.fish
-```
-
-**PowerShell:**
-
-```powershell
-shield-manager completion powershell | Out-File -Encoding utf8 $HOME\shield-manager-completion.ps1
-if (!(Test-Path $PROFILE)) { New-Item -Type File -Force $PROFILE }
-Add-Content $PROFILE '. $HOME\shield-manager-completion.ps1'
-```
-
-Then open a new terminal and activate the environment again. Completion works whenever the
-`shield-manager` command does.
-
-App names are completed from the apps shield-manager has already seen on your Shields, so
-completing never has to wait for a device. To fill the list, run this once (and again
-whenever you've installed new apps):
-
-```sh
-shield-manager app list --all
-```
-
-`fleet status` and `fleet sync` also add to the list. After updating shield-manager, run the
-first command for your shell again.
-
 ## Development
 
 Follow the install steps, but in step 4 run `pip install -e ".[dev]"` instead, so code changes

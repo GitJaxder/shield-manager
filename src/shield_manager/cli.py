@@ -1,4 +1,3 @@
-# PYTHON_ARGCOMPLETE_OK
 """Command-line interface for shield-manager."""
 
 from __future__ import annotations
@@ -7,18 +6,8 @@ import argparse
 import sys
 from collections.abc import Callable, Sequence
 
-import argcomplete
-
 from shield_manager import __version__
 from shield_manager.apk import ApkError, read_apk_info
-from shield_manager.completion import (
-    SHELLS,
-    complete_devices,
-    complete_groups,
-    complete_packages,
-    remember_packages,
-    shell_script,
-)
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
     Device,
@@ -33,10 +22,10 @@ def _add_target_args(parser: argparse.ArgumentParser) -> None:
     targets = parser.add_argument_group("targets (pick at least one)")
     targets.add_argument(
         "-d", "--device", action="append", default=[], metavar="NAME", help="a device by name"
-    ).completer = complete_devices
+    )
     targets.add_argument(
         "-g", "--group", action="append", default=[], metavar="GROUP", help="every device in GROUP"
-    ).completer = complete_groups
+    )
     targets.add_argument("--all", action="store_true", help="every registered device")
 
 
@@ -55,21 +44,19 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("name")
     add.add_argument("host")
     add.add_argument("--port", type=int, default=DEFAULT_ADB_PORT)
-    add.add_argument(
-        "-g", "--group", action="append", default=[], metavar="GROUP"
-    ).completer = complete_groups
+    add.add_argument("-g", "--group", action="append", default=[], metavar="GROUP")
 
     device_sub.add_parser("list", help="list registered devices")
 
     remove = device_sub.add_parser("remove", help="forget a registered device")
-    remove.add_argument("name").completer = complete_devices
+    remove.add_argument("name")
 
     groups = device_sub.add_parser("set-groups", help="replace the groups a device belongs to")
-    groups.add_argument("name").completer = complete_devices
-    groups.add_argument("groups", nargs="*", metavar="GROUP").completer = complete_groups
+    groups.add_argument("name")
+    groups.add_argument("groups", nargs="*", metavar="GROUP")
 
     info = device_sub.add_parser("info", help="connect to a device and show its properties")
-    info.add_argument("name").completer = complete_devices
+    info.add_argument("name")
 
     app = sub.add_parser("app", help="install, update, remove and inspect apps")
     app_sub = app.add_subparsers(dest="action", required=True)
@@ -82,11 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_args(install)
 
     uninstall = app_sub.add_parser("uninstall", help="remove an app by package name")
-    uninstall.add_argument("package").completer = complete_packages
+    uninstall.add_argument("package")
     _add_target_args(uninstall)
 
     version = app_sub.add_parser("version", help="show the installed version of a package")
-    version.add_argument("package").completer = complete_packages
+    version.add_argument("package")
     _add_target_args(version)
 
     app_list = app_sub.add_parser("list", help="list installed apps")
@@ -97,22 +84,20 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_sub = fleet.add_subparsers(dest="action", required=True)
 
     ref = fleet_sub.add_parser("set-reference", help="choose the Shield the others mirror")
-    ref.add_argument("name").completer = complete_devices
+    ref.add_argument("name")
 
     fleet_status = fleet_sub.add_parser(
         "status", help="show how each Shield differs from the reference (targets default to all)"
     )
     fleet_status.add_argument(
         "--from", dest="source", metavar="NAME", help="override the reference"
-    ).completer = complete_devices
+    )
     _add_target_args(fleet_status)
 
     fleet_sync = fleet_sub.add_parser(
         "sync", help="copy missing and outdated apps from the reference (targets default to all)"
     )
-    fleet_sync.add_argument(
-        "--from", dest="source", metavar="NAME", help="override the reference"
-    ).completer = complete_devices
+    fleet_sync.add_argument("--from", dest="source", metavar="NAME", help="override the reference")
     fleet_sync.add_argument(
         "--prune", action="store_true", help="also remove apps the reference doesn't have"
     )
@@ -126,10 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_args(fleet_sync)
 
-    completion = sub.add_parser(
-        "completion", help="print the Tab-completion script for your shell (see README)"
-    )
-    completion.add_argument("shell", choices=SHELLS)
     web = sub.add_parser("web", help="serve the web UI")
     web.add_argument("--host", default="127.0.0.1", help="address to bind (default: localhost)")
     web.add_argument("--port", type=int, default=8765)
@@ -176,44 +157,17 @@ def _device_info(device: Device) -> int:
     return 0
 
 
-class _RecordingConnection:
-    """Passes everything through to a device connection, noting app names it lists.
-
-    The names feed Tab completion, so it never has to connect to a Shield itself.
-    """
-
-    def __init__(self, conn) -> None:
-        self._conn = conn
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-    def shell(self, command: str, **kwargs):
-        out = self._conn.shell(command, **kwargs)
-        if command.startswith("pm list packages"):
-            remember_packages(
-                line.split()[0].removeprefix("package:")
-                for line in str(out).splitlines()
-                if line.startswith("package:")
-            )
-        return out
-
-
-def _connect(device: Device) -> _RecordingConnection:
-    from shield_manager import adb
-
-    return _RecordingConnection(adb.connect(device))
-
-
 def _for_each_device(devices: list[Device], action: Callable[[object], str]) -> int:
     """Run action against each device in turn, printing one result line per device.
 
     Returns 1 if any device failed, so one unreachable Shield doesn't hide the rest.
     """
+    from shield_manager import adb
+
     failed = 0
     for device in devices:
         try:
-            conn = _connect(device)
+            conn = adb.connect(device)
             try:
                 print(f"{device.name}: {action(conn)}")
             finally:
@@ -288,7 +242,7 @@ def _describe(drift) -> str:
 
 
 def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
-    from shield_manager import fleet
+    from shield_manager import adb, fleet
 
     if args.action == "set-reference":
         registry.set_reference(args.name)
@@ -308,12 +262,12 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
 
     try:
         if args.action == "status":
-            reports = fleet.status(reference, targets, _connect)
+            reports = fleet.status(reference, targets, adb.connect)
         else:
             reports = fleet.sync(
                 reference,
                 targets,
-                _connect,
+                adb.connect,
                 prune=args.prune,
                 allow_downgrade=args.allow_downgrade,
                 dry_run=args.dry_run,
@@ -361,9 +315,7 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
 
 
 def main(argv: Sequence[str] | None = None, registry: Registry | None = None) -> int:
-    parser = build_parser()
-    argcomplete.autocomplete(parser)
-    args = parser.parse_args(argv)
+    args = build_parser().parse_args(argv)
     registry = registry or Registry()
 
     try:
@@ -392,8 +344,6 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_app(args, registry)
         elif args.command == "fleet":
             return _run_fleet(args, registry)
-        elif args.command == "completion":
-            print(shell_script(args.shell))
         elif args.command == "web":
             return _serve_web(args, registry)
     except DeviceExistsError as e:
