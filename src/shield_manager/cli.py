@@ -77,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("package")
     _add_target_args(version)
 
+    store = app_sub.add_parser(
+        "store-page", help="open an app's Play Store page on the Shield, ready to press Install"
+    )
+    store.add_argument("package")
+    _add_target_args(store)
+
     app_list = app_sub.add_parser("list", help="list installed apps")
     app_list.add_argument("--system", action="store_true", help="include system packages")
     _add_target_args(app_list)
@@ -109,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fleet_sync.add_argument(
         "--dry-run", action="store_true", help="show what would change without changing it"
+    )
+    fleet_sync.add_argument(
+        "--no-download",
+        action="store_true",
+        help="only copy between Shields; never download apps from GitHub or APKPure",
     )
     _add_target_args(fleet_sync)
 
@@ -267,6 +278,12 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
             v = deploy.installed_version(conn, args.package)
             return "not installed" if v is None else f"{v.version_name} ({v.version_code})"
 
+    elif args.action == "store-page":
+
+        def action(conn):
+            deploy.open_store_page(conn, args.package)
+            return "Play Store page open on the TV; press Install with the remote"
+
     else:  # list
 
         def action(conn):
@@ -293,6 +310,7 @@ def _describe(drift) -> str:
 
 def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
     from shield_manager import adb, fleet
+    from shield_manager.sources import Downloader
 
     if args.action == "set-reference":
         registry.set_reference(args.name)
@@ -323,6 +341,9 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
                 allow_downgrade=args.allow_downgrade,
                 dry_run=args.dry_run,
                 progress=progress,
+                downloads=None
+                if args.no_download
+                else Downloader.from_config(registry.path.parent),
             )
             progress.clear()
     except Exception as e:  # target failures are caught per device; this is the reference

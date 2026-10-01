@@ -40,7 +40,9 @@ def ui(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(appinfo, "fetch_meta", fake_meta)
-    server = create_server(registry, port=0, connect=connect, cache_dir=tmp_path / "cache")
+    server = create_server(
+        registry, port=0, connect=connect, cache_dir=tmp_path / "cache", downloads=None
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -402,9 +404,12 @@ def mixed_ui(tmp_path, monkeypatch):
     }
     abis = {"den": ARM64, "attic": ARM32, "living": ARM32}
     pulled_from = []
+    apk_files = {}  # package -> real APK every Shield serves (for signature checks)
 
     def connect(device):
-        conn = FakeConnection(installed=installed[device.name], abis=abis[device.name])
+        conn = FakeConnection(
+            installed=installed[device.name], abis=abis[device.name], apk_files=apk_files
+        )
         conn.installed = installed[device.name]
         real_pull = conn.pull
 
@@ -416,8 +421,11 @@ def mixed_ui(tmp_path, monkeypatch):
         return conn
 
     monkeypatch.setattr(appinfo, "fetch_meta", lambda *a: None)
-    server = create_server(registry, port=0, connect=connect, cache_dir=tmp_path / "cache")
+    server = create_server(
+        registry, port=0, connect=connect, cache_dir=tmp_path / "cache", downloads=None
+    )
     api = server.api
+    api.apk_files = apk_files
     server.server_close()
     return api, installed, abis, pulled_from
 
@@ -455,3 +463,30 @@ def test_copy_reports_an_app_no_shield_has_a_compatible_copy_of(mixed_ui):
     assert step["stage"] == "failed"
     assert "not compatible with this Shield" in step["error"]
     assert "com.plexapp.android" not in installed["living"]
+
+
+def test_copy_downloads_a_build_when_no_shield_has_one_it_can_run(mixed_ui, tmp_path):
+    import json
+
+    from shield_manager import sources
+    from tests.fakes import FakeHttp, real_apk
+
+    api, installed, abis, _ = mixed_ui
+    abis["attic"] = ["x86"]
+    pkg = "com.plexapp.android"
+    api.apk_files[pkg] = real_apk(tmp_path / "den.apk", pkg, 5, "5", ["arm64-v8a"], b"plex")
+    build = real_apk(tmp_path / "plex-armeabi-v7a.apk", pkg, 5, "5", ["armeabi-v7a"], b"plex")
+    url = "https://github.com/dl/plex-armeabi-v7a.apk"
+    http = FakeHttp(
+        {
+            "https://api.github.com/repos/plex/tv/releases?per_page=10": json.dumps(
+                [{"assets": [{"name": build.name, "browser_download_url": url}]}]
+            ).encode(),
+            url: build,
+        }
+    )
+    api.downloads = sources.Downloader(http, {pkg: "plex/tv"})
+    job = _run(api, api.install_from_shield({"packages": [pkg], "devices": ["living"]}))
+    assert job["state"] == "done", job
+    assert [s["source"] for s in job["steps"]] == ["GitHub"]
+    assert installed["living"][pkg][0] == 5

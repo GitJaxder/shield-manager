@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from shield_manager.appinfo import IMAGE_TYPES
 from shield_manager.registry import Registry
+from shield_manager.sources import Downloader
 from shield_manager.web.api import Api, ApiError, Connector
 
 # Mutating requests must carry this header. Browsers won't send a custom header
@@ -217,7 +218,12 @@ def create_server(
     verbose: bool = False,
     allowed_clients: Iterable[str] = (),
     cache_dir: Path | None = None,
+    downloads: Downloader | None | str = "default",
 ) -> UiServer:
-    """Build the UI server. allowed_clients, if given, limits which IPs may connect."""
-    api = Api(registry, connect, cache_dir)
+    """Build the UI server. allowed_clients, if given, limits which IPs may connect.
+
+    downloads is where apps come from when no Shield has a copy a target can run: the
+    built-in GitHub and APKPure sources by default, or None to turn downloads off.
+    """
+    api = Api(registry, connect, cache_dir, downloads)
     return UiServer((host, port), api, verbose=verbose, allowed_clients=allowed_clients)

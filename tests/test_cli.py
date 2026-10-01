@@ -197,3 +197,9 @@ def test_progress_line_rewrites_in_place_on_a_terminal():
     assert out.startswith("\rDownloading org.xbmc.kodi from lounge - 40%")
     assert "\rInstalling org.xbmc.kodi on den" in out
     assert out.endswith("\r")
+
+
+def test_app_store_page_opens_the_play_store(registry, fleet, capsys):
+    assert main(["app", "store-page", "org.xbmc.kodi", "-d", "den"], registry=registry) == 0
+    assert any("market://details?id=org.xbmc.kodi" in c for c in fleet["den"].commands)
+    assert "press Install" in capsys.readouterr().out

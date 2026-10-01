@@ -27,6 +27,7 @@ from shield_manager.registry import (
     Registry,
     default_config_dir,
 )
+from shield_manager.sources import Downloader
 from shield_manager.web.jobs import (
     COPYING,
     DONE,
@@ -103,9 +104,15 @@ class Api:
         registry: Registry,
         connect: Connector | None = None,
         cache_dir: Path | None = None,
+        downloads: Downloader | None | str = "default",
     ) -> None:
         self.registry = registry
         self.connect = connect or _default_connect
+        # Where apps come from when no Shield has a copy a target can run; None turns
+        # downloads off.
+        if downloads == "default":
+            downloads = Downloader.from_config(registry.path.parent)
+        self.downloads = downloads
         self.meta = appinfo.MetaCache(cache_dir or default_config_dir() / "app-cache")
         self.jobs = Jobs()
         self._meta_lock = threading.Lock()
@@ -332,9 +339,9 @@ class Api:
     def _copy_apps(self, job: Job, plan: list[tuple[str, list[str], int, list[Device]]]) -> None:
         """Copy each (package, source Shields, versionCode, targets) in plan, step by step.
 
-        Sources are Shields holding that version, preferred first. Each target gets the copy
-        from the best source for its CPU types (fleet.rank_sources), falling back to the next
-        when a copy is built for a CPU type it doesn't run. Every app/Shield pair gets a
+        Sources are Shields holding that version, preferred first. Each target tries them in
+        the best order for its CPU types (fleet.source_order), with downloads from GitHub and
+        APKPure before Shields whose copy it likely can't run. Every app/Shield pair gets a
         progress step up front, so the page shows the whole queue.
         """
         names = {
@@ -348,12 +355,13 @@ class Api:
             if r["ok"]
         }
 
-        def ranked(sources: list[str], device: Device) -> list[str]:
-            return fleet.rank_sources(sources, abis.get(device.name, []), abis)
+        def ordered(package: str, sources: list[str], device: Device) -> list[str]:
+            target = abis.get(device.name, [])
+            return fleet.source_order(sources, target, abis, package, self.downloads)
 
         steps = {
             (package, device.name): job.add_step(
-                package, self._label(package), device.name, ranked(sources, device)[0]
+                package, self._label(package), device.name, ordered(package, sources, device)[0]
             )
             for package, sources, _, devices in plan
             for device in devices
@@ -363,12 +371,13 @@ class Api:
             label = self._label(package)
             try:
                 with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
-                    pulled: dict[str, list[Path]] = {}
-
+                    fetcher = fleet.Fetcher(
+                        package, version, sources, self._pull, Path(tmp), self.downloads
+                    )
                     for device, step in zip(devices, mine, strict=True):
                         job.progress = f"Installing {label} on {device.name}"
-                        order = ranked(sources, device)
-                        fetch = partial(self._fetch, job, package, step, pulled, Path(tmp))
+                        fetch = partial(self._fetch, job, fetcher, step, abis.get(device.name, []))
+                        order = ordered(package, sources, device)
                         result = self._on_device(
                             device,
                             lambda c, p=package, v=version, o=order, f=fetch, st=step: asdict(
@@ -390,19 +399,19 @@ class Api:
         job.progress = ""
 
     def _fetch(
-        self, job: Job, package: str, step: Step, pulled: dict, tmp: Path, source: str
+        self, job: Job, fetcher: fleet.Fetcher, step: Step, target_abis: list[str], source: str
     ) -> list[Path]:
-        """An app's APK files from source, downloaded once per copy job and Shield."""
+        """An app's APK files from a Shield or a download, shown on step as it goes."""
         step.source = source
-        if source not in pulled:
-            job.progress = f"Downloading {self._label(package)} from {source}"
-            step.update(DOWNLOADING)
-            with self._connected(self.registry.get(source)) as conn:
-                pulled[source] = _call_with_progress(
-                    deploy.pull_app, [step], conn, package, tmp / source
-                )
+        job.progress = f"Downloading {self._label(fetcher.package)} from {source}"
+        step.update(DOWNLOADING)
+        paths = fetcher.get(source, target_abis, _step_reporter([step]))
         step.update(COPYING)
-        return pulled[source]
+        return paths
+
+    def _pull(self, source: str, package: str, dest: Path, progress: Any) -> list[Path]:
+        with self._connected(self.registry.get(source)) as conn:
+            return deploy.pull_app(conn, package, dest, progress=progress)
 
     def install_from_shield(self, body: dict) -> dict:
         """Copy apps from the Shield that has the newest version (preferring the reference).
