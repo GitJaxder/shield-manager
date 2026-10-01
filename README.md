@@ -180,6 +180,19 @@ and press **Install** with the remote:
 shield-manager app store-page com.valvesoftware.steamlink -d bedroom
 ```
 
+### Checking for updates
+
+```sh
+shield-manager fleet updates             # list apps with a newer version online
+shield-manager fleet updates --install   # install those updates on every Shield
+```
+
+This compares each installed app with the newest version on GitHub (for the open-source
+apps it knows) and APKPure. Updates are installed on every Shield that has the app, with
+the build for its CPU type, and only when the download is signed by the same developer
+as the installed copy. APKPure gets its copies separately from the Play Store, so it
+can lag behind an update the Play Store already offers.
+
 To teach it more open-source apps, create a file called `app-sources.json` next to
 `devices.json` in `~/.config/shield-manager/`, listing each app's package name and GitHub
 repository:

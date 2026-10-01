@@ -52,6 +52,9 @@ class Wanted:
     version_code: int
     version_name: str
     abis: list[str]  # the target Shield's CPU types, preferred first
+    # True when updating: any versionCode >= version_code will do, from the newest
+    # release (GitHub) or the listing for version_name (APKPure).
+    newer: bool = False
 
 
 class Http:
@@ -113,7 +116,7 @@ class Downloader:
         dest.mkdir(parents=True, exist_ok=True)
         tried = 0
         for release in releases:
-            if release.get("draft"):
+            if release.get("draft") or (wanted.newer and release.get("prerelease")):
                 continue
             for asset in rank_assets(release.get("assets", []), wanted.abis):
                 if tried == GITHUB_MAX_DOWNLOADS:
@@ -127,6 +130,10 @@ class Downloader:
                     continue
                 if info.package != wanted.package:
                     continue
+                if wanted.newer:
+                    if info.version_code >= wanted.version_code:
+                        return [path]
+                    raise SourceUnavailable("its newest release isn't newer than yours")
                 if info.version_code < wanted.version_code:
                     # Releases are newest first, so older ones won't have it either.
                     raise SourceUnavailable(
@@ -169,10 +176,58 @@ class Downloader:
             if info.package != wanted.package:
                 raise SourceUnavailable(f"its download is a different app ({info.package})")
             codes.add(info.version_code)
-        if codes != {wanted.version_code}:
+        if wanted.newer and len(codes) == 1 and min(codes) >= wanted.version_code:
+            return paths
+        if wanted.newer or codes != {wanted.version_code}:
             found = ", ".join(str(c) for c in sorted(codes))
             raise SourceUnavailable(f"its download is version {found}, not {wanted.version_code}")
         return paths
+
+    def latest(self, package: str, abis: list[str]) -> tuple[str, str] | None:
+        """The newest version name available for an app and where: (name, "GitHub" or
+        "APKPure"), or None if neither has it."""
+        found = []
+        repo = self.github_repo(package)
+        if repo:
+            try:
+                releases = json.loads(
+                    self.http.get(
+                        f"https://api.github.com/repos/{repo}/releases?per_page=10",
+                        {"Accept": "application/vnd.github+json"},
+                    )
+                )
+                tags = [
+                    r["tag_name"].removeprefix("v")
+                    for r in releases
+                    if not r.get("draft") and not r.get("prerelease") and r.get("tag_name")
+                ]
+                if tags:
+                    found.append((tags[0], "GitHub"))
+            except Exception:
+                pass
+        try:
+            body = self.http.get(
+                APKPURE_VERSIONS_URL + package, {**APKPURE_HEADERS, "x-abis": ",".join(abis)}
+            )
+            names = apkpure_versions(body)
+            if names:
+                found.append((max(names, key=version_key), "APKPure"))
+        except Exception:
+            pass
+        if not found:
+            return None
+        return max(found, key=lambda f: version_key(f[0]))
+
+
+def version_key(name: str) -> tuple[int, ...]:
+    """Sort key for version names: their numbers in order, so "1.10" > "1.9"."""
+    return tuple(int(n) for n in re.findall(r"\d+", name))
+
+
+def apkpure_versions(body: bytes) -> list[str]:
+    """Version names listed in APKPure's app_version response (as apkeep reads them)."""
+    found = re.findall(rb"([A-Za-z0-9.-]+):\([0-9a-fA-F]{40,}", body)
+    return list(dict.fromkeys(v.decode() for v in found))
 
 
 def apkpure_link(body: bytes, version_name: str) -> tuple[str, str] | None:

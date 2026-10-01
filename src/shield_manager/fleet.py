@@ -17,7 +17,7 @@ from shield_manager import deploy
 from shield_manager.apk import ApkError, read_apk_info, signers
 from shield_manager.deploy import Connection, Phase, Progress, ProgressCallback
 from shield_manager.registry import Device
-from shield_manager.sources import Downloader, SourceUnavailable, Wanted
+from shield_manager.sources import Downloader, SourceUnavailable, Wanted, version_key
 
 Connector = Callable[[Device], Connection]
 
@@ -136,9 +136,9 @@ Pull = Callable[[str, str, Path, ProgressCallback | None], list[Path]]
 class Fetcher:
     """One app's APK files from Shields or downloads, each fetched at most once.
 
-    pull(shield, package, dest, progress) copies the app off a Shield. Downloads are only used when
-    they're signed by the same developer as a copy on one of holders (the Shields that
-    have the app), so a tampered download is never installed.
+    pull(shield, package, dest, progress) copies the app off a Shield. Downloads are only
+    used when they're signed by the same developer as a copy on one of holders (the
+    Shields that have the app), so a tampered download is never installed.
     """
 
     def __init__(
@@ -149,9 +149,13 @@ class Fetcher:
         pull: Pull,
         tmp: Path,
         downloads: Downloader | None = None,
+        update_to: str | None = None,
     ):
         self.package, self.version_code, self.holders = package, version_code, holders
         self.pull, self.tmp, self.downloads = pull, tmp, downloads
+        # When set, downloads fetch this newer version name, and any versionCode at least
+        # version_code is accepted (see check_updates).
+        self.update_to = update_to
         self.cache: dict[object, list[Path]] = {}
 
     def get(
@@ -179,7 +183,10 @@ class Fetcher:
                 "can't check who signed a download, because the copy on your Shields has no "
                 "modern (v2+) signature"
             )
-        wanted = Wanted(self.package, self.version_code, version_name, target_abis)
+        if self.update_to:
+            wanted = Wanted(self.package, self.version_code, self.update_to, target_abis, True)
+        else:
+            wanted = Wanted(self.package, self.version_code, version_name, target_abis)
         dest = self.tmp / source.lower() / self.package / "-".join(target_abis)
         on_bytes = None
         if progress:
@@ -417,3 +424,121 @@ def sync(
             except Exception as e:
                 report.error = str(e) or type(e).__name__
     return reports
+
+
+@dataclass
+class Update:
+    """A newer version of an installed app that GitHub or APKPure offers."""
+
+    package: str
+    installed_name: str
+    installed_code: int
+    latest_name: str
+    source: str  # GITHUB or APKPURE
+    shields: list[str]  # Shields with the app installed
+    # Filled in by apply_updates: Shield -> outcome, and Shields that failed.
+    applied: dict[str, str] = field(default_factory=dict)
+    failed: dict[str, str] = field(default_factory=dict)
+
+
+def check_updates(
+    devices: list[Device], connect: Connector, downloads: Downloader
+) -> tuple[list[Update], dict[str, str]]:
+    """Find installed apps with a newer version on GitHub or APKPure.
+
+    Each app is checked once, at the newest version on any Shield. Version names are
+    compared by their numbers ("1.10" is newer than "1.9"). Returns the updates and
+    {Shield: error} for Shields that couldn't be read.
+    """
+    versions: dict[str, dict[str, int]] = {}
+    abis: dict[str, list[str]] = {}
+    errors = {}
+    for device in devices:
+        try:
+            with _connected(connect, device) as conn:
+                versions[device.name] = deploy.package_versions(conn)
+                abis[device.name] = deploy.device_abis(conn)
+        except Exception as e:
+            errors[device.name] = str(e) or type(e).__name__
+    by_name = {d.name: d for d in devices}
+    updates = []
+    for package in sorted({p for v in versions.values() for p in v}):
+        holders = [n for n, v in versions.items() if package in v]
+        newest = max(versions[n][package] for n in holders)
+        holder = next(n for n in holders if versions[n][package] == newest)
+        try:
+            with _connected(connect, by_name[holder]) as conn:
+                installed = deploy.installed_version(conn, package)
+        except Exception:
+            continue
+        if not installed or not version_key(installed.version_name):
+            continue
+        latest = downloads.latest(package, abis[holder])
+        if latest and version_key(latest[0]) > version_key(installed.version_name):
+            updates.append(
+                Update(package, installed.version_name, newest, latest[0], latest[1], holders)
+            )
+    return updates, errors
+
+
+def apply_updates(
+    updates: list[Update],
+    devices: list[Device],
+    connect: Connector,
+    downloads: Downloader,
+    cache_dir: Path | None = None,
+    progress: ProgressCallback | None = None,
+) -> list[Update]:
+    """Install each update on every Shield that has the app, with the build for its CPU
+    type, only when the download is signed like the installed copy."""
+    by_name = {d.name: d for d in devices}
+
+    def pull(
+        source: str, package: str, dest: Path, on_progress: ProgressCallback | None
+    ) -> list[Path]:
+        with _connected(connect, by_name[source]) as src_conn:
+            return deploy.pull_app(src_conn, package, dest)
+
+    with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
+        for update in updates:
+            fetcher = Fetcher(
+                update.package,
+                update.installed_code + 1,
+                update.shields,
+                pull,
+                Path(tmp),
+                downloads,
+                update_to=update.latest_name,
+            )
+            sources = [update.source, *(s for s in DOWNLOADS if s != update.source)]
+            for name in update.shields:
+                on_progress = _for_device(progress, name)
+                try:
+                    with _connected(connect, by_name[name]) as conn:
+                        target_abis = deploy.device_abis(conn)
+                        reasons = []
+                        for source in sources:
+                            try:
+                                paths = fetcher.get(source, target_abis, on_progress)
+                                info = read_apk_info(paths[0])
+                                deploy.install(
+                                    conn,
+                                    paths,
+                                    update.package,
+                                    info.version_code,
+                                    progress=on_progress,
+                                )
+                            except (SourceUnavailable, deploy.IncompatibleAppError) as e:
+                                reasons.append(f"{source}: {e}")
+                                continue
+                            update.applied[name] = f"updated to {info.version_name} (from {source})"
+                            break
+                        else:
+                            raise SourceUnavailable("; ".join(reasons))
+                except Exception as e:
+                    update.failed[name] = str(e) or type(e).__name__
+                    if on_progress:
+                        on_progress(
+                            Progress(update.package, Phase.FAILED, message=update.failed[name])
+                        )
+    return updates

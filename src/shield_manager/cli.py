@@ -123,6 +123,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_target_args(fleet_sync)
 
+    updates = fleet_sub.add_parser(
+        "updates",
+        help="check GitHub and APKPure for newer versions of installed apps "
+        "(targets default to all)",
+    )
+    updates.add_argument(
+        "--install", action="store_true", help="install the updates found on every Shield"
+    )
+    _add_target_args(updates)
+
     web = sub.add_parser("web", help="serve the web UI")
     web.add_argument("--host", default="127.0.0.1", help="address to bind (default: localhost)")
     web.add_argument("--port", type=int, default=8765)
@@ -293,6 +303,43 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
     return _for_each_device(devices, action, progress)
 
 
+def _run_updates(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager import adb, fleet
+    from shield_manager.sources import Downloader
+
+    picked = args.device or args.group or args.all
+    devices = registry.resolve(args.device, args.group, args.all) if picked else registry.list()
+    if not devices:
+        print("error: no devices registered", file=sys.stderr)
+        return 1
+    downloads = Downloader.from_config(registry.path.parent)
+    updates, errors = fleet.check_updates(devices, adb.connect, downloads)
+    for name, error in errors.items():
+        print(f"{name}: FAILED: {error}", file=sys.stderr)
+    if not updates:
+        print("Every app is up to date" + (" on the Shields that answered" if errors else ""))
+        return 1 if errors else 0
+    for u in updates:
+        print(
+            f"{u.package}: {u.installed_name} -> {u.latest_name} ({u.source}) on "
+            + ", ".join(u.shields)
+        )
+    if not args.install:
+        print("Install them with: shield-manager fleet updates --install")
+        return 0
+    progress = _ProgressLine()
+    fleet.apply_updates(updates, devices, adb.connect, downloads, progress=progress)
+    progress.clear()
+    failed = 0
+    for u in updates:
+        for name, outcome in u.applied.items():
+            print(f"{name}: {u.package} {outcome}")
+        for name, error in u.failed.items():
+            failed += 1
+            print(f"{name}: {u.package} FAILED: {error}", file=sys.stderr)
+    return 1 if failed or errors else 0
+
+
 _DRIFT_LABELS = {
     "install": "missing",
     "update": "outdated",
@@ -316,6 +363,9 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
         registry.set_reference(args.name)
         print(f"{args.name} is now the reference; other Shields will mirror its apps")
         return 0
+
+    if args.action == "updates":
+        return _run_updates(args, registry)
 
     source = args.source or registry.reference
     if not source:
