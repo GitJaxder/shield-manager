@@ -1,0 +1,5 @@
+# Lets Home Assistant OS install Shield Manager as an app (formerly add-on).
+# The app itself is in ha-app/shield_manager/.
+name: Shield Manager
+url: https://github.com/GitJaxder/shield-manager
+maintainer: GitJaxder

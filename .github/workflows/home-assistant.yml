@@ -1,0 +1,38 @@
+name: Home Assistant
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install -e . pytest-homeassistant-custom-component
+      - run: pytest tests_ha -o asyncio_mode=auto
+
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: home-assistant/actions/hassfest@master
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: frenck/action-addon-linter@v2
+        with:
+          path: ha-app/shield_manager
+      - name: Build the app's image from this commit
+        run: >
+          docker build ha-app/shield_manager -t shield-manager-app
+          --build-arg BUILD_VERSION=test
+          --build-arg SHIELD_MANAGER_REF=${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check the command is installed
+        run: docker run --rm --entrypoint shield-manager shield-manager-app --version

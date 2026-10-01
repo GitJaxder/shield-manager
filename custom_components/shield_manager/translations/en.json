@@ -1,0 +1,86 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Enter the address of the Shield Manager web UI. If you use the Shield Manager app in Home Assistant, start the app instead and this integration is found automatically.",
+        "data": {
+          "url": "Address"
+        },
+        "data_description": {
+          "url": "For example http://192.168.1.10:8765 for `shield-manager web --host 0.0.0.0` on another computer."
+        }
+      },
+      "hassio_confirm": {
+        "title": "Shield Manager",
+        "description": "Add sensors, buttons and actions for the Shields the Shield Manager app manages?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Couldn't reach Shield Manager at that address. Check that the app or `shield-manager web` is running."
+    },
+    "abort": {
+      "already_configured": "Shield Manager is already set up.",
+      "single_instance_allowed": "Shield Manager is already set up."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "reachable": { "name": "Reachable" }
+    },
+    "button": {
+      "sync": { "name": "Sync from reference" },
+      "sync_all": { "name": "Sync all Shields" },
+      "check_updates": { "name": "Check for app updates" },
+      "install_updates": { "name": "Install app updates" }
+    },
+    "select": {
+      "reference": { "name": "Reference Shield" }
+    },
+    "sensor": {
+      "apps": { "name": "Apps installed" },
+      "behind": { "name": "Apps behind reference" },
+      "updates_available": { "name": "App updates available" },
+      "activity": { "name": "Activity" },
+      "last_read": { "name": "Last read" }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Shield Manager isn't set up or isn't running."
+    }
+  },
+  "services": {
+    "sync": {
+      "name": "Sync Shields",
+      "description": "Install the apps the reference Shield has on the Shields that are missing them or have older versions. Never removes apps.",
+      "fields": {
+        "devices": {
+          "name": "Shields",
+          "description": "Names of the Shields to sync, as in Shield Manager. Leave empty for all of them."
+        },
+        "allow_downgrade": {
+          "name": "Allow downgrade",
+          "description": "Also replace apps that are newer than the reference's version."
+        },
+        "downloads": {
+          "name": "Allow downloads",
+          "description": "Download from GitHub when no Shield has a copy a Shield can run."
+        }
+      }
+    },
+    "install": {
+      "name": "Install apps",
+      "description": "Copy apps from the Shield with the newest version to other Shields.",
+      "fields": {
+        "packages": {
+          "name": "Apps",
+          "description": "Package names, for example org.xbmc.kodi."
+        },
+        "devices": {
+          "name": "Shields",
+          "description": "Names of the Shields to install on. Leave empty for every Shield that's missing the app or has an older version."
+        }
+      }
+    }
+  }
+}

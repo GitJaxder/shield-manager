@@ -1,0 +1,7 @@
+configuration:
+  use_android_tv_key:
+    name: Use the Android TV integration's ADB key
+    description: >-
+      On first start, copy the key Home Assistant's Android TV integration already uses, so
+      Shields that trust it don't ask again. Off, or without that integration, the app makes
+      its own key and each Shield asks once.
