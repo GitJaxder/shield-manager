@@ -128,8 +128,10 @@
   .step-head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .step-head .pct { font-variant-numeric: tabular-nums; opacity: .85; }
   .step small { margin-top: 2px; }
-  .job button.store { font-size: 14px; font-weight: 600; margin-top: 6px; padding: 6px 12px; border-radius: 8px;
-    background: var(--accent); color: var(--accent-ink); }
+  .job .fixes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .job .store { font-size: 14px; font-weight: 600; padding: 6px 12px; border-radius: 8px;
+    background: var(--accent); color: var(--accent-ink); text-decoration: none; }
+  .job .store.alt { background: none; color: inherit; border: 1px solid currentColor; }
   .pbar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--bg) 25%, transparent);
     overflow: hidden; margin-top: 4px; position: relative; }
   /* No width transition: the tray is redrawn on every poll, so it would restart from 0. */
@@ -355,7 +357,10 @@ function stepRow(st) {
       ${active && st.percent != null ? `<span class="pct">${Math.round(st.percent)}%</span>` : ""}</div>
     <div class="pbar ${bar}"><i style="width:${width}%${bar === "ind" ? `;animation-delay:-${(Date.now() % 1200) / 1000}s` : ""}"></i></div>
     <small>${esc(stageText(st))}</small>
-    ${st.stage === "failed" && st.store ? `<button class="store" data-store="${esc(st.package)}" data-device="${esc(st.device)}">Open in Play Store on ${esc(st.device)}</button>` : ""}</div>`;
+    ${st.stage === "failed" && st.store ? `<div class="fixes">
+      <button class="store" data-store="${esc(st.package)}" data-device="${esc(st.device)}">Open in Play Store on ${esc(st.device)}</button>
+      ${/^https:\/\//.test(st.download_page || "") ? `<a class="store alt" href="${esc(st.download_page)}" target="_blank" rel="noopener noreferrer">Open download page</a>` : ""}
+    </div>${st.download_page ? `<small>Or download the file for ${esc(st.device)} and upload it on the Shields tab.</small>` : ""}` : ""}</div>`;
 }
 
 // Opens the app's Play Store page on that Shield's TV, so one press of Install finishes it.
@@ -525,7 +530,7 @@ function renderApps() {
   };
 }
 
-// ---- updates online (GitHub, APKPure) ----------------------------------------------
+// ---- updates online (GitHub) -----------------------------------------------------
 const CHECK_EVERY = 6 * 3600;  // seconds; an older check is redone when the page opens
 
 function ago(t) {

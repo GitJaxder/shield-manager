@@ -466,6 +466,29 @@ def test_copy_reports_an_app_no_shield_has_a_compatible_copy_of(mixed_ui):
     assert "com.plexapp.android" not in installed["living"]
 
 
+def test_an_app_no_copy_fits_gets_a_download_page(mixed_ui, monkeypatch):
+    from shield_manager import fleet
+
+    api, _, abis, _ = mixed_ui
+    abis["attic"] = ["x86"]
+    asked = []
+
+    def download_page(self, target_abis):
+        asked.append((self.package, target_abis))
+        return "https://www.apkmirror.com/apk/plex/plex-5"
+
+    monkeypatch.setattr(fleet.Fetcher, "download_page", download_page)
+    body = {"packages": ["com.plexapp.android"], "devices": ["living"]}
+    [step] = _run(api, api.install_from_shield(body))["steps"]
+    assert step["download_page"] == "https://www.apkmirror.com/apk/plex/plex-5"
+    assert asked == [("com.plexapp.android", ["armeabi-v7a", "armeabi"])]
+
+    # Anything but an https link is dropped, since the page shows it as a button.
+    monkeypatch.setattr(fleet.Fetcher, "download_page", lambda self, a: "javascript:alert(1)")
+    [step] = _run(api, api.install_from_shield(body))["steps"]
+    assert step["store"] and step["download_page"] is None
+
+
 def test_copy_downloads_a_build_when_no_shield_has_one_it_can_run(mixed_ui, tmp_path):
     import json
 
