@@ -123,7 +123,9 @@ Shields you pick, all at once. A banner offers **Sync now** when Shields have
 fallen behind the reference. Sync never removes apps. The **Shields** tab adds, groups and
 removes Shields, picks the reference, and installs an APK file you upload.
 
-Installs run in the background, so closing the page doesn't stop them. App names and icons
+Installs run in the background, so closing the page doesn't stop them. While they run, a panel
+at the bottom shows each app on each Shield moving through Downloading, Copying and Installing,
+with a percentage where the transfer reports one. App names and icons
 are cached in `~/.config/shield-manager/app-cache/`.
 
 The page uses only relative URLs, so it works behind a path prefix such as Home Assistant's

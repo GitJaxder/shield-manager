@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -279,3 +280,60 @@ def test_unreadable_app_details_are_retried_after_restart_not_every_load(ui, mon
     assert ui("GET", "/api/catalog")[1]["meta_pending"] is False
     assert len(calls) == first
     assert ui.api.meta.load() == {}  # failures aren't written to disk
+
+
+def test_install_job_reports_a_step_per_app_and_shield(ui):
+    body = {"packages": ["com.plexapp.android", "com.retroarch"]}
+    job = ui.wait_job(ui("POST", "/api/install-from-shield", body)[1])
+    steps = {(s["package"], s["device"]): s for s in job["steps"]}
+    assert set(steps) == {("com.plexapp.android", "living"), ("com.retroarch", "den")}
+    assert all(s["stage"] == "done" for s in steps.values())
+
+
+def test_progress_from_core_shows_up_as_percentages(ui, monkeypatch):
+    from shield_manager import deploy
+    from shield_manager.web import api as web_api
+
+    seen = []
+    real_pull, real_install = deploy.pull_app, deploy.install
+
+    def event(phase, percent=None):
+        # Shaped like deploy.Progress from the core library's progress API.
+        return SimpleNamespace(phase=SimpleNamespace(value=phase), percent=percent)
+
+    def pull_app(conn, package, dest, progress=None):
+        progress(event("downloading", 25))
+        seen.append(("pull", job_steps()))
+        return real_pull(conn, package, dest)
+
+    def install(conn, apks, package, version, allow_downgrade=False, progress=None):
+        progress(event("copying", 75))
+        seen.append(("push", job_steps()))
+        progress(event("installing"))
+        seen.append(("install", job_steps()))
+        progress(event("done"))
+        return real_install(conn, apks, package, version, allow_downgrade=allow_downgrade)
+
+    def job_steps():
+        return [(s.stage, s.percent) for j in ui.api.jobs.list() for s in j.steps]
+
+    monkeypatch.setattr(deploy, "pull_app", pull_app)
+    monkeypatch.setattr(deploy, "install", install)
+    monkeypatch.setattr(web_api.deploy, "pull_app", pull_app)
+    monkeypatch.setattr(web_api.deploy, "install", install)
+    body = {"packages": ["com.plexapp.android"], "devices": ["living"]}
+    job = ui.wait_job(ui("POST", "/api/install-from-shield", body)[1])
+    assert job["state"] == "done", job
+    assert seen == [
+        ("pull", [("downloading", 25)]),
+        ("push", [("copying", 75)]),
+        ("install", [("installing", None)]),
+    ]
+
+
+def test_sync_job_has_steps(ui):
+    job = ui.wait_job(ui("POST", "/api/sync", {})[1])
+    assert sorted((s["package"], s["device"], s["stage"]) for s in job["steps"]) == [
+        ("com.plexapp.android", "living", "done"),
+        ("org.xbmc.kodi", "living", "done"),
+    ]
