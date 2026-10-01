@@ -52,6 +52,9 @@ class DeviceReport:
     # Filled in by sync: package -> outcome message, and packages that failed.
     applied: dict[str, str] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
+    # package -> link to a download page for a build this Shield can run, for apps that
+    # failed because no Shield or download had one.
+    download_pages: dict[str, str] = field(default_factory=dict)
 
     @property
     def in_sync(self) -> bool:
@@ -106,8 +109,8 @@ def rank_sources(
     return sorted(candidates, key=key)
 
 
-GITHUB, APKPURE = "GitHub", "APKPure"
-DOWNLOADS = (GITHUB, APKPURE)
+GITHUB = "GitHub"
+DOWNLOADS = (GITHUB,)
 
 
 def source_order(
@@ -119,14 +122,14 @@ def source_order(
 ) -> list[str]:
     """Every source to try for one target, best first.
 
-    Shields whose copy the target can likely run come first, then downloads (GitHub, when
-    the app's repository is known, then APKPure), then the remaining Shields.
+    Shields whose copy the target can likely run come first, then a GitHub download when
+    the app's repository is known, then the remaining Shields.
     """
     ranked = rank_sources(shields, target_abis, abis)
     if downloads is None:
         return ranked
     likely = [n for n in ranked if (abis.get(n) or [""])[0] in target_abis]
-    online = ([GITHUB] if downloads.github_repo(package) else []) + [APKPURE]
+    online = [GITHUB] if downloads.github_repo(package) else []
     return likely + online + [n for n in ranked if n not in likely]
 
 
@@ -192,8 +195,7 @@ class Fetcher:
         if progress:
             transfer = deploy.ByteProgress(self.package, Phase.DOWNLOADING, progress, source)
             on_bytes = transfer.update
-        fetch = self.downloads.github if source == GITHUB else self.downloads.apkpure
-        paths = fetch(wanted, dest, on_bytes)
+        paths = self.downloads.github(wanted, dest, on_bytes)
         for path in paths:
             if not signers(path) & trusted:
                 raise SourceUnavailable(
@@ -201,6 +203,18 @@ class Fetcher:
                     f" ({path.name}), so it wasn't installed"
                 )
         return paths
+
+    def download_page(self, target_abis: list[str]) -> str | None:
+        """A link to the download page for this version, built for target_abis, or None
+        when downloads are off."""
+        if self.downloads is None:
+            return None
+        try:
+            _, version_name = self._trusted()
+        except SourceUnavailable:
+            version_name = ""
+        abi = target_abis[0] if target_abis else "armeabi-v7a"
+        return self.downloads.download_page(self.package, version_name or None, abi)
 
     def _trusted(self) -> tuple[set[str], str]:
         """Signing certificates and version name of the copy on a Shield that has the app."""
@@ -415,6 +429,15 @@ def sync(
                             drifted[name].discard(d.package)  # can now be a source too
                         except Exception as e:
                             report.failed[d.package] = str(e) or type(e).__name__
+                            page = None
+                            if isinstance(e, deploy.IncompatibleAppError) and d.package in fetchers:
+                                page = fetchers[d.package].download_page(abis[name])
+                            if page:
+                                report.download_pages[d.package] = page
+                                report.failed[d.package] += (
+                                    f" Or download a copy for {name} from {page} and install it"
+                                    f" with `shield-manager app install FILE -d {name}`."
+                                )
                             if on_progress:
                                 on_progress(
                                     Progress(
@@ -428,13 +451,13 @@ def sync(
 
 @dataclass
 class Update:
-    """A newer version of an installed app that GitHub or APKPure offers."""
+    """A newer version of an installed app that GitHub offers."""
 
     package: str
     installed_name: str
     installed_code: int
     latest_name: str
-    source: str  # GITHUB or APKPURE
+    source: str  # GITHUB
     shields: list[str]  # Shields with the app installed
     # Filled in by apply_updates: Shield -> outcome, and Shields that failed.
     applied: dict[str, str] = field(default_factory=dict)
@@ -444,10 +467,11 @@ class Update:
 def check_updates(
     devices: list[Device], connect: Connector, downloads: Downloader
 ) -> tuple[list[Update], dict[str, str]]:
-    """Find installed apps with a newer version on GitHub or APKPure.
+    """Find installed apps with a newer version on GitHub.
 
-    Each app is checked once, at the newest version on any Shield. Version names are
-    compared by their numbers ("1.10" is newer than "1.9"). Returns the updates and
+    Only apps whose GitHub repository is known can be checked. Each app is checked once,
+    at the newest version on any Shield. Version names are compared by their numbers
+    ("1.10" is newer than "1.9"). Returns the updates and
     {Shield: error} for Shields that couldn't be read.
     """
     versions: dict[str, dict[str, int]] = {}

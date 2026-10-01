@@ -231,7 +231,7 @@ def create_server(
     """Build the UI server. allowed_clients, if given, limits which IPs may connect.
 
     downloads is where apps come from when no Shield has a copy a target can run: the
-    built-in GitHub and APKPure sources by default, or None to turn downloads off.
+    built-in GitHub source by default, or None to turn downloads off.
     """
     api = Api(registry, connect, cache_dir, downloads)
     return UiServer((host, port), api, verbose=verbose, allowed_clients=allowed_clients)

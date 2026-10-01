@@ -1,23 +1,24 @@
-"""Download apps from the internet when no Shield has a copy another Shield can run.
+"""Find apps online when no Shield has a copy another Shield can run.
 
 Shields of different models run different CPU types, and the Play Store gives each one
-only the native code for its own. When no Shield of the right model has an app, these
-sources can fetch a build for it:
+only the native code for its own. When no Shield of the right model has an app:
 
-- GitHub releases, for open-source apps whose repository is known (GITHUB_APPS, plus any
-  listed in <config>/app-sources.json).
-- APKPure, through the same unofficial API the open-source apkeep tool uses.
-
-Callers must check that a download is signed by the same developer as the copy already
-on a Shield (apk.signers) before installing it; fleet.Fetcher does.
+- GitHub releases are downloaded automatically, for open-source apps whose repository is
+  known (GITHUB_APPS, plus any listed in <config>/app-sources.json). Callers must check
+  that a download is signed by the same developer as the copy already on a Shield
+  (apk.signers) before installing it; fleet.Fetcher does.
+- For every other app, download_page() gives a link to the page for the right build, the
+  way Morphe Manager does: Morphe's server redirects package~version~CPU type to that
+  build's page on APKMirror (or Uptodown, APKPure, APKCombo), and a web search limited to
+  those sites stands in when it can't. Someone downloads the file there by hand.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 import urllib.request
-import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,10 +32,13 @@ GITHUB_APPS = {
     "io.homeassistant.companion.android": "home-assistant/android",
 }
 
-APKPURE_VERSIONS_URL = "https://api.pureapk.com/m/v3/cms/app_version?hl=en-US&package_name="
-# Headers apkeep sends; x-abis asks for builds for these CPU types.
-APKPURE_HEADERS = {"x-cv": "3172501", "x-sv": "29", "x-gp": "1"}
-_APKPURE_LINK = rb"(X?APKJ)..(https?://[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b[-a-zA-Z0-9()@:%_+.~#?&/=]*)"
+# Morphe Manager's lookup: GET <url><package>~<version or "any">~<CPU type> redirects to the
+# download page for that build.
+MORPHE_SEARCH_URL = "https://api.morphe.software/v2/web-search/"
+DOWNLOAD_SITES = (
+    "(site:apkmirror.com OR site:uptodown.com OR site:apkpure.com OR site:apkcombo.com)"
+)
+PAGE_TIMEOUT_S = 8
 
 USER_AGENT = "shield-manager"
 GITHUB_MAX_DOWNLOADS = 6  # APKs to try across recent releases before giving up
@@ -52,8 +56,7 @@ class Wanted:
     version_code: int
     version_name: str
     abis: list[str]  # the target Shield's CPU types, preferred first
-    # True when updating: any versionCode >= version_code will do, from the newest
-    # release (GitHub) or the listing for version_name (APKPure).
+    # True when updating: any versionCode >= version_code from the newest release will do.
     newer: bool = False
 
 
@@ -74,6 +77,13 @@ class Http:
                     done += len(chunk)
                     if progress:
                         progress(done, total)
+
+    def final_url(self, url: str) -> str:
+        """Where url ends up after its redirects."""
+        req = self._request(url, None)
+        req.method = "HEAD"
+        with urllib.request.urlopen(req, timeout=PAGE_TIMEOUT_S) as res:
+            return res.geturl()
 
     @staticmethod
     def _request(url: str, headers: dict[str, str] | None) -> urllib.request.Request:
@@ -144,103 +154,57 @@ class Downloader:
                 break  # a newer release; try the next one
         raise SourceUnavailable(f"no recent release of {repo} has version {wanted.version_code}")
 
-    def apkpure(
-        self, wanted: Wanted, dest: Path, progress: ProgressBytes | None = None
-    ) -> list[Path]:
-        if not wanted.version_name:
-            raise SourceUnavailable("the app's version name is unknown")
-        try:
-            body = self.http.get(
-                APKPURE_VERSIONS_URL + wanted.package,
-                {**APKPURE_HEADERS, "x-abis": ",".join(wanted.abis)},
-            )
-        except Exception as e:
-            raise SourceUnavailable(f"couldn't reach APKPure: {e}") from e
-        match = apkpure_link(body, wanted.version_name)
-        if not match:
-            raise SourceUnavailable(f"it doesn't list version {wanted.version_name}")
-        kind, url = match
-        dest.mkdir(parents=True, exist_ok=True)
-        path = dest / f"{wanted.package}.{'xapk' if kind == 'XAPK' else 'apk'}"
-        try:
-            self.http.save(url, path, progress)
-        except Exception as e:
-            raise SourceUnavailable(f"download failed: {e}") from e
-        paths = unpack_xapk(path, dest / "xapk", wanted.abis) if kind == "XAPK" else [path]
-        codes = set()
-        for p in paths:
-            try:
-                info = read_apk_info(p)
-            except ApkError as e:
-                raise SourceUnavailable(f"its download isn't a valid app: {e}") from e
-            if info.package != wanted.package:
-                raise SourceUnavailable(f"its download is a different app ({info.package})")
-            codes.add(info.version_code)
-        if wanted.newer and len(codes) == 1 and min(codes) >= wanted.version_code:
-            return paths
-        if wanted.newer or codes != {wanted.version_code}:
-            found = ", ".join(str(c) for c in sorted(codes))
-            raise SourceUnavailable(f"its download is version {found}, not {wanted.version_code}")
-        return paths
-
     def latest(self, package: str, abis: list[str]) -> tuple[str, str] | None:
-        """The newest version name available for an app and where: (name, "GitHub" or
-        "APKPure"), or None if neither has it."""
-        found = []
+        """The newest version name available for an app and where: (name, "GitHub"), or
+        None when its GitHub repository isn't known or has no release. abis is unused for
+        now; it's kept so other sources can be added."""
         repo = self.github_repo(package)
-        if repo:
-            try:
-                releases = json.loads(
-                    self.http.get(
-                        f"https://api.github.com/repos/{repo}/releases?per_page=10",
-                        {"Accept": "application/vnd.github+json"},
-                    )
-                )
-                tags = [
-                    r["tag_name"].removeprefix("v")
-                    for r in releases
-                    if not r.get("draft") and not r.get("prerelease") and r.get("tag_name")
-                ]
-                if tags:
-                    found.append((tags[0], "GitHub"))
-            except Exception:
-                pass
-        try:
-            body = self.http.get(
-                APKPURE_VERSIONS_URL + package, {**APKPURE_HEADERS, "x-abis": ",".join(abis)}
-            )
-            names = apkpure_versions(body)
-            if names:
-                found.append((max(names, key=version_key), "APKPure"))
-        except Exception:
-            pass
-        if not found:
+        if not repo:
             return None
-        return max(found, key=lambda f: version_key(f[0]))
+        try:
+            releases = json.loads(
+                self.http.get(
+                    f"https://api.github.com/repos/{repo}/releases?per_page=10",
+                    {"Accept": "application/vnd.github+json"},
+                )
+            )
+        except Exception:
+            return None
+        tags = [
+            r["tag_name"].removeprefix("v")
+            for r in releases
+            if not r.get("draft") and not r.get("prerelease") and r.get("tag_name")
+        ]
+        return (tags[0], "GitHub") if tags else None
+
+    def download_page(self, package: str, version_name: str | None, abi: str) -> str:
+        """A link to the download page for this build of an app (the newest when
+        version_name is None), for a Shield whose main CPU type is abi."""
+        lookup = morphe_url(package, version_name, abi)
+        try:
+            page = self.http.final_url(lookup)
+        except Exception:
+            return web_search_url(package, version_name, abi)
+        host = urllib.parse.urlsplit(page).hostname or ""
+        if host.endswith("morphe.software"):  # no redirect: it found nothing
+            return web_search_url(package, version_name, abi)
+        return page
+
+
+def morphe_url(package: str, version_name: str | None, abi: str) -> str:
+    return MORPHE_SEARCH_URL + urllib.parse.quote(f"{package}~{version_name or 'any'}~{abi}")
+
+
+def web_search_url(package: str, version_name: str | None, abi: str) -> str:
+    """A web search for the app's build on the download sites Morphe uses."""
+    version = f' "{version_name}"' if version_name else ""
+    query = f'"{package}"{version} {abi} {DOWNLOAD_SITES}'
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
 
 
 def version_key(name: str) -> tuple[int, ...]:
     """Sort key for version names: their numbers in order, so "1.10" > "1.9"."""
     return tuple(int(n) for n in re.findall(r"\d+", name))
-
-
-def apkpure_versions(body: bytes) -> list[str]:
-    """Version names listed in APKPure's app_version response (as apkeep reads them)."""
-    found = re.findall(rb"([A-Za-z0-9.-]+):\([0-9a-fA-F]{40,}", body)
-    return list(dict.fromkeys(v.decode() for v in found))
-
-
-def apkpure_link(body: bytes, version_name: str) -> tuple[str, str] | None:
-    """Find the download link for version_name in APKPure's app_version response.
-
-    Returns ("APK" or "XAPK", url). Like apkeep, this scans the binary response for the
-    version name followed by the first link after it.
-    """
-    pattern = rb"[^0-9]" + re.escape(version_name.encode()) + rb":.+?" + _APKPURE_LINK
-    match = re.search(pattern, body, re.DOTALL)
-    if not match:
-        return None
-    return match.group(1).decode().removesuffix("J"), match.group(2).decode()
 
 
 # Substrings of release asset names that say which CPU type a build is for. Order matters:
@@ -278,31 +242,3 @@ def rank_assets(assets: list[dict], abis: list[str]) -> list[dict]:
         return len(abis) if abi is None else abis.index(abi)
 
     return sorted(usable, key=key)
-
-
-def unpack_xapk(path: Path, dest: Path, abis: list[str]) -> list[Path]:
-    """Extract the APKs from an XAPK bundle, base first, leaving out CPU-type splits for
-    CPU types this Shield doesn't run. Expansion files (OBB) aren't copied."""
-    try:
-        zf = zipfile.ZipFile(path)
-    except zipfile.BadZipFile as e:
-        raise SourceUnavailable(f"its download isn't a valid XAPK: {e}") from e
-    dest.mkdir(parents=True, exist_ok=True)
-    abi_splits = {f"config.{abi.replace('-', '_')}.apk" for abi in _ALL_ABIS}
-    wanted_splits = {f"config.{abi.replace('-', '_')}.apk" for abi in abis}
-    paths = []
-    with zf:
-        for name in zf.namelist():
-            if "/" in name or not name.endswith(".apk"):
-                continue
-            if name in abi_splits and name not in wanted_splits:
-                continue
-            out = dest / name
-            out.write_bytes(zf.read(name))
-            paths.append(out)
-    if not paths:
-        raise SourceUnavailable("its XAPK has no APK files")
-    return sorted(paths, key=lambda p: p.name.startswith("config."))
-
-
-_ALL_ABIS = ["arm64-v8a", "armeabi-v7a", "armeabi", "x86", "x86_64"]

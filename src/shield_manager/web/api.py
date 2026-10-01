@@ -122,7 +122,7 @@ class Api:
         self._meta_failed: dict[str, int] = {}
         self._screens: dict[str, dict] = {}  # device name -> latest capture
         self._screen_locks: dict[str, threading.Lock] = {}
-        # Newer versions online (GitHub, APKPure) from the last check, by package.
+        # Newer versions on GitHub from the last check, by package.
         self._online: dict[str, fleet.Update] = {}
         self._online_errors: dict[str, str] = {}
         self._online_checked: float | None = None
@@ -348,8 +348,8 @@ class Api:
         """Copy each (package, source Shields, versionCode, targets) in plan, step by step.
 
         Sources are Shields holding that version, preferred first. Each target tries them in
-        the best order for its CPU types (fleet.source_order), with downloads from GitHub and
-        APKPure before Shields whose copy it likely can't run. Every app/Shield pair gets a
+        the best order for its CPU types (fleet.source_order), with GitHub downloads
+        before Shields whose copy it likely can't run. Every app/Shield pair gets a
         progress step up front, so the page shows the whole queue.
         """
         names = {
@@ -569,7 +569,7 @@ class Api:
         return self.downloads
 
     def online_updates(self) -> dict:
-        """The last check for newer versions on GitHub and APKPure."""
+        """The last check for newer versions on GitHub."""
         job = self._online_job
         return {
             "enabled": self.downloads is not None,
@@ -588,14 +588,14 @@ class Api:
         }
 
     def check_online_updates(self) -> dict:
-        """Start a check of every installed app against GitHub and APKPure."""
+        """Start a check of every installed app against GitHub."""
         downloads = self._downloads_on()
         job = self._online_job
         if job and job.state == "running":
             return job.to_dict()  # one check at a time; the page follows the running one
 
         def work(job: Job) -> None:
-            job.progress = "Checking GitHub and APKPure for newer versions"
+            job.progress = "Checking GitHub for newer versions"
             updates, errors = fleet.check_updates(self.registry.list(), self.connect, downloads)
             self._online = {u.package: u for u in updates}
             self._online_errors, self._online_checked = errors, time.time()

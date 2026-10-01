@@ -1,11 +1,10 @@
 import json
-import zipfile
 
 import pytest
 
 from shield_manager import sources
 from shield_manager.sources import Downloader, SourceUnavailable, Wanted
-from tests.fakes import FakeHttp, apkpure_body, real_apk
+from tests.fakes import FakeHttp, real_apk
 
 PKG = "com.teamsmart.videomanager.tv"
 ARM32 = ["armeabi-v7a", "armeabi"]
@@ -93,84 +92,46 @@ def test_from_config_adds_repositories(tmp_path):
     assert d.github_repo(PKG) == "yuliskov/SmartTube"
 
 
-def test_apkpure_link_picks_the_version():
-    body = apkpure_body(
-        ("2.0", b"APKJ", "https://download.pureapk.com/b/APK/two?x=1"),
-        ("1.0", b"XAPKJ", "https://download.pureapk.com/b/XAPK/one?x=1"),
-    )
-    assert sources.apkpure_link(body, "1.0") == (
-        "XAPK",
-        "https://download.pureapk.com/b/XAPK/one?x=1",
-    )
-    assert sources.apkpure_link(body, "2.0") == (
-        "APK",
-        "https://download.pureapk.com/b/APK/two?x=1",
-    )
-    assert sources.apkpure_link(body, "3.0") is None
-
-
-def test_apkpure_downloads_and_unpacks_an_xapk(tmp_path):
-    base = real_apk(tmp_path / f"{PKG}.apk", PKG, 100, "1.0", cert=b"dev")
-    arm = real_apk(tmp_path / "config.armeabi_v7a.apk", PKG, 100, "1.0", abis=["armeabi-v7a"])
-    arm64 = real_apk(tmp_path / "config.arm64_v8a.apk", PKG, 100, "1.0", abis=["arm64-v8a"])
-    xapk = tmp_path / "bundle.xapk"
-    with zipfile.ZipFile(xapk, "w") as zf:
-        for p in (base, arm, arm64):
-            zf.write(p, p.name)
-        zf.writestr("manifest.json", "{}")
-        zf.writestr("Android/obb/x.obb", b"big")
-    url = "https://download.pureapk.com/b/XAPK/one?x=1"
-    http = FakeHttp(
-        {sources.APKPURE_VERSIONS_URL + PKG: apkpure_body(("1.0", b"XAPKJ", url)), url: xapk}
-    )
-    paths = Downloader(http).apkpure(Wanted(PKG, 100, "1.0", ARM32), tmp_path / "out")
-    assert [p.name for p in paths] == [f"{PKG}.apk", "config.armeabi_v7a.apk"]
-    assert http.requests[0][1]["x-abis"] == "armeabi-v7a,armeabi"
-
-
-def test_apkpure_rejects_a_different_version(tmp_path):
-    apk = real_apk(tmp_path / "a.apk", PKG, 101, "1.0")
-    url = "https://download.pureapk.com/b/APK/one?x=1"
-    http = FakeHttp(
-        {sources.APKPURE_VERSIONS_URL + PKG: apkpure_body(("1.0", b"APKJ", url)), url: apk}
-    )
-    with pytest.raises(SourceUnavailable, match="version 101, not 100"):
-        Downloader(http).apkpure(Wanted(PKG, 100, "1.0", ARM32), tmp_path / "out")
-
-
-def test_apkpure_unreachable(tmp_path):
-    with pytest.raises(SourceUnavailable, match="couldn't reach APKPure"):
-        Downloader(FakeHttp()).apkpure(Wanted(PKG, 100, "1.0", ARM32), tmp_path)
-
-
 def test_version_key_orders_by_numbers():
     assert sources.version_key("1.10") > sources.version_key("1.9")
     assert sources.version_key("v2.0-tv") > sources.version_key("1.99.9")
     assert sources.version_key("beta") == ()
 
 
-def test_apkpure_versions_lists_names():
-    body = apkpure_body(
-        ("2.0", b"APKJ", "https://x.example/a?1"), ("1.10", b"APKJ", "https://x.example/b?1")
-    )
-    assert sources.apkpure_versions(body) == ["2.0", "1.10"]
-
-
-def test_latest_takes_the_newest_of_github_and_apkpure(tmp_path):
+def test_latest_reads_the_newest_github_release():
     http = FakeHttp(
         {
             RELEASES: json.dumps(
                 [{"tag_name": "v3.0-beta", "prerelease": True}, {"tag_name": "v2.1"}]
-            ).encode(),
-            sources.APKPURE_VERSIONS_URL + PKG: apkpure_body(
-                ("2.0", b"APKJ", "https://x.example/a?1")
-            ),
+            ).encode()
         }
     )
-    d = Downloader(http, dict(sources.GITHUB_APPS))
-    assert d.latest(PKG, ARM32) == ("2.1", "GitHub")
-    assert Downloader(http).latest(PKG, ARM32) == ("2.0", "APKPure")
-    assert Downloader(FakeHttp()).latest(PKG, ARM32) is None
+    assert Downloader(http, dict(sources.GITHUB_APPS)).latest(PKG, ARM32) == ("2.1", "GitHub")
+    assert Downloader(http).latest(PKG, ARM32) is None  # repository not known
+    assert Downloader(FakeHttp(), dict(sources.GITHUB_APPS)).latest(PKG, ARM32) is None
+
+
+def test_download_page_follows_morphes_redirect():
+    lookup = sources.MORPHE_SEARCH_URL + "org.xbmc.kodi~21.1~armeabi-v7a"
+    page = "https://www.apkmirror.com/apk/xbmc/kodi/kodi-21-1-release/"
+    http = FakeHttp(redirects={lookup: page})
+    assert Downloader(http).download_page("org.xbmc.kodi", "21.1", "armeabi-v7a") == page
+    newest = sources.MORPHE_SEARCH_URL + "org.xbmc.kodi~any~arm64-v8a"
+    http = FakeHttp(redirects={newest: page})
+    assert Downloader(http).download_page("org.xbmc.kodi", None, "arm64-v8a") == page
+
+
+def test_download_page_falls_back_to_a_web_search():
+    pkg, abi = "org.xbmc.kodi", "armeabi-v7a"
+    search = sources.web_search_url(pkg, "21.1", abi)
+    assert search.startswith("https://www.google.com/search?q=")
+    assert "site%3Aapkmirror.com" in search and "%2221.1%22" in search
+    # Morphe unreachable
+    assert Downloader(FakeHttp()).download_page(pkg, "21.1", abi) == search
+    # Morphe answered without redirecting: it found nothing
+    lookup = sources.morphe_url(pkg, "21.1", abi)
+    http = FakeHttp(redirects={lookup: lookup})
+    assert Downloader(http).download_page(pkg, "21.1", abi) == search
 
 
 def test_github_newer_takes_the_newest_release(tmp_path):
