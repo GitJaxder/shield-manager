@@ -99,6 +99,19 @@ def pick(paths: list[Path], abis: list[str]) -> list[Path]:
     return kept
 
 
+def describe_parts(paths: list[Path]) -> str:
+    """Which parts of a split app paths are, base first: "base + armeabi-v7a + xhdpi"."""
+    names = ["base"]
+    for path in paths[1:]:
+        label = split_abi(path.name)
+        if not label:
+            label = path.name.lower().removesuffix(".apk")
+            for prefix in ("split_config.", "config.", "base-", "split_"):
+                label = label.removeprefix(prefix)
+        names.append(label)
+    return " + ".join(names)
+
+
 def expand(paths: list[Path], dest: Path) -> list[Path]:
     """paths with every bundle replaced by the APKs in it."""
     out = []

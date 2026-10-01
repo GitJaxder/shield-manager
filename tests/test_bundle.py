@@ -109,6 +109,20 @@ def test_install_copies_only_what_the_shield_runs(tmp_path):
     assert pushed == ["base.apk", "split_config.armeabi_v7a.apk", "split_config.xhdpi.apk"]
 
 
+def test_progress_names_the_parts_each_shield_gets(tmp_path):
+    from dataclasses import replace
+
+    conn = FakeConnection(abis=["armeabi-v7a", "armeabi"])
+    conn.installed[PKG] = (5000315, "1.3.32")
+    events = []
+    deploy.install(conn, make_apkm(tmp_path), PKG, 5000315, progress=events.append)
+    installing = next(e for e in events if e.phase is deploy.Phase.INSTALLING)
+    assert installing.parts == "base + armeabi-v7a + xhdpi"
+    assert replace(installing, device="bedroom").describe() == (
+        f"Installing {PKG} on bedroom (base + armeabi-v7a + xhdpi)"
+    )
+
+
 def test_install_refuses_a_bundle_for_other_cpu_types(tmp_path):
     conn = FakeConnection(abis=["mips"])
     with pytest.raises(deploy.IncompatibleAppError, match="only runs mips"):
