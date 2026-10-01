@@ -65,6 +65,8 @@ class Progress:
     device: str | None = None
     message: str = ""
     source: str | None = None
+    # For split APKs and bundles, which parts are installed, e.g. "base + armeabi-v7a".
+    parts: str = ""
 
     @property
     def percent(self) -> int | None:
@@ -78,6 +80,8 @@ class Progress:
         where = self.source or self.device if self.phase is Phase.DOWNLOADING else self.device
         if where:
             text += f" {_PREPOSITION[self.phase]} {where}"
+        if self.parts and self.phase in (Phase.COPYING, Phase.INSTALLING, Phase.DONE):
+            text += f" ({self.parts})"
         if self.percent is not None:
             text += f" - {self.percent}%"
         if self.message:
@@ -209,6 +213,9 @@ def install(
             paths = bundle.pick(paths, device_abis(conn))
         except bundle.BundleError as e:
             raise IncompatibleAppError(str(e)) from e
+    if len(paths) > 1:
+        parts, report = bundle.describe_parts(paths), progress
+        progress = lambda p: report(replace(p, parts=parts))  # noqa: E731
     remotes = [f"{REMOTE_TMP_DIR}/{package}.{i}.apk" for i in range(len(paths))]
     flags = "-r -d" if allow_downgrade else "-r"
     long_op = {**_LONG, "timeout_s": INSTALL_TIMEOUT_S}
