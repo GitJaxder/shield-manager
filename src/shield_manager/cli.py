@@ -80,6 +80,37 @@ def build_parser() -> argparse.ArgumentParser:
     app_list.add_argument("--system", action="store_true", help="include system packages")
     _add_target_args(app_list)
 
+    fleet = sub.add_parser("fleet", help="keep every Shield's apps matching a reference Shield")
+    fleet_sub = fleet.add_subparsers(dest="action", required=True)
+
+    ref = fleet_sub.add_parser("set-reference", help="choose the Shield the others mirror")
+    ref.add_argument("name")
+
+    fleet_status = fleet_sub.add_parser(
+        "status", help="show how each Shield differs from the reference (targets default to all)"
+    )
+    fleet_status.add_argument(
+        "--from", dest="source", metavar="NAME", help="override the reference"
+    )
+    _add_target_args(fleet_status)
+
+    fleet_sync = fleet_sub.add_parser(
+        "sync", help="copy missing and outdated apps from the reference (targets default to all)"
+    )
+    fleet_sync.add_argument("--from", dest="source", metavar="NAME", help="override the reference")
+    fleet_sync.add_argument(
+        "--prune", action="store_true", help="also remove apps the reference doesn't have"
+    )
+    fleet_sync.add_argument(
+        "--allow-downgrade",
+        action="store_true",
+        help="also downgrade apps that are newer than on the reference",
+    )
+    fleet_sync.add_argument(
+        "--dry-run", action="store_true", help="show what would change without changing it"
+    )
+    _add_target_args(fleet_sync)
+
     return parser
 
 
@@ -135,7 +166,13 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
         print(f"{info.package} {info.version_name} (versionCode {info.version_code})")
 
         def action(conn):
-            v = deploy.install(conn, args.apk, info, allow_downgrade=args.allow_downgrade)
+            v = deploy.install(
+                conn,
+                args.apk,
+                info.package,
+                info.version_code,
+                allow_downgrade=args.allow_downgrade,
+            )
             return f"installed {v.version_name} (versionCode {v.version_code})"
 
     elif args.action == "uninstall":
@@ -157,6 +194,94 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
             return f"{len(packages)} packages\n" + "\n".join(f"  {p}" for p in packages)
 
     return _for_each_device(devices, action)
+
+
+_DRIFT_LABELS = {
+    "install": "missing",
+    "update": "outdated",
+    "newer": "newer than reference",
+    "extra": "not on reference",
+}
+
+
+def _describe(drift) -> str:
+    label = _DRIFT_LABELS[drift.change.value]
+    if drift.change.value in ("update", "newer"):
+        return f"{drift.package}: {label} ({drift.device_version} vs {drift.reference_version})"
+    return f"{drift.package}: {label}"
+
+
+def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager import adb, fleet
+
+    if args.action == "set-reference":
+        registry.set_reference(args.name)
+        print(f"{args.name} is now the reference; other Shields will mirror its apps")
+        return 0
+
+    source = args.source or registry.reference
+    if not source:
+        print(
+            "error: no reference Shield; choose one with: shield-manager fleet set-reference NAME",
+            file=sys.stderr,
+        )
+        return 2
+    reference = registry.get(source)
+    picked = args.device or args.group or args.all
+    targets = registry.resolve(args.device, args.group, args.all) if picked else registry.list()
+
+    try:
+        if args.action == "status":
+            reports = fleet.status(reference, targets, adb.connect)
+        else:
+            reports = fleet.sync(
+                reference,
+                targets,
+                adb.connect,
+                prune=args.prune,
+                allow_downgrade=args.allow_downgrade,
+                dry_run=args.dry_run,
+            )
+    except Exception as e:  # target failures are caught per device; this is the reference
+        print(f"error: can't read apps from reference {reference.name}: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Reference: {reference.name}")
+    if not reports:
+        print("No other Shields to compare. Add one with: shield-manager device add NAME HOST")
+    problems = 0
+    for report in reports:
+        if report.error:
+            problems += 1
+            print(f"{report.device.name}: FAILED: {report.error}", file=sys.stderr)
+            continue
+        if args.action == "status" or args.dry_run:
+            if report.in_sync:
+                print(f"{report.device.name}: in sync")
+                continue
+            problems += 1
+            print(f"{report.device.name}: {len(report.drift)} differences")
+            for d in report.drift:
+                print(f"  {_describe(d)}")
+            continue
+        if not report.drift:
+            outcome = "already in sync"
+        elif report.applied or report.failed:
+            outcome = "synced"
+        else:
+            outcome = "no changes made"
+        print(f"{report.device.name}: {outcome}")
+        for package, outcome in report.applied.items():
+            print(f"  {package}: {outcome}")
+        for package, error in report.failed.items():
+            problems += 1
+            print(f"  {package}: FAILED: {error}", file=sys.stderr)
+        for d in report.drift:
+            if d.package in report.applied or d.package in report.failed:
+                continue
+            hint = "--allow-downgrade" if d.change.value == "newer" else "--prune"
+            print(f"  {_describe(d)}, left as is (use {hint})")
+    return 1 if problems else 0
 
 
 def main(argv: Sequence[str] | None = None, registry: Registry | None = None) -> int:
@@ -187,6 +312,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
                 return _device_info(registry.get(args.name))
         elif args.command == "app":
             return _run_app(args, registry)
+        elif args.command == "fleet":
+            return _run_fleet(args, registry)
     except DeviceExistsError as e:
         print(f"error: device '{e}' is already registered", file=sys.stderr)
         return 1

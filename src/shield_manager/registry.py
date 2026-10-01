@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 DEFAULT_ADB_PORT = 5555
+_KEEP = object()
 
 
 def default_config_dir() -> Path:
@@ -50,23 +51,42 @@ class Registry:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_config_dir() / "devices.json"
 
-    def _load(self) -> dict[str, Device]:
+    def _read(self) -> dict:
         if not self.path.exists():
             return {}
-        data = json.loads(self.path.read_text())
-        return {d["name"]: Device(**d) for d in data.get("devices", [])}
+        return json.loads(self.path.read_text())
 
-    def _save(self, devices: dict[str, Device]) -> None:
+    def _load(self) -> dict[str, Device]:
+        return {d["name"]: Device(**d) for d in self._read().get("devices", [])}
+
+    def _save(self, devices: dict[str, Device], reference: object = _KEEP) -> None:
+        """Write devices, keeping the stored reference unless a new one is passed."""
+        if reference is _KEEP:
+            reference = self._read().get("reference")
+        if reference not in devices:
+            reference = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "reference": reference,
             "devices": [
                 {**asdict(d), "groups": list(d.groups)}
                 for d in sorted(devices.values(), key=lambda d: d.name)
-            ]
+            ],
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2) + "\n")
         tmp.replace(self.path)
+
+    @property
+    def reference(self) -> str | None:
+        """Name of the device the others mirror, if one has been chosen."""
+        return self._read().get("reference")
+
+    def set_reference(self, name: str) -> None:
+        devices = self._load()
+        if name not in devices:
+            raise DeviceNotFoundError(name)
+        self._save(devices, reference=name)
 
     def list(self) -> list[Device]:
         return sorted(self._load().values(), key=lambda d: d.name)
