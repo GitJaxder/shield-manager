@@ -1,6 +1,9 @@
+import zipfile
+
 import pytest
 
 from shield_manager import deploy
+from shield_manager.apk import native_abis
 from tests.fakes import FakeConnection, make_apk
 
 PKG = "com.example.tv"
@@ -180,3 +183,53 @@ def test_slow_split_install_and_pull_do_not_hit_the_socket_timeout(tmp_path):
     target = SlowShield()
     deploy.install(target, paths, PKG, 42)
     assert target.installed[PKG] == (42, "")
+
+
+def _native_apk(path, *abis):
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("AndroidManifest.xml", b"")
+        for abi in abis:
+            zf.writestr(f"lib/{abi}/libapp.so", b"\x7fELF")
+    return path
+
+
+def test_native_abis_reads_base_and_splits(tmp_path):
+    base = _native_apk(tmp_path / "base.apk")
+    split = _native_apk(tmp_path / "split_config.arm64_v8a.apk", "arm64-v8a")
+    assert native_abis([base]) == set()
+    assert native_abis([base, split]) == {"arm64-v8a"}
+
+
+def test_install_refuses_an_app_built_for_another_cpu_before_copying(tmp_path):
+    conn = FakeConnection(responses={"getprop ro.product.cpu.abilist": "armeabi-v7a,armeabi\n"})
+    apk = _native_apk(tmp_path / "app.apk", "arm64-v8a")
+    with pytest.raises(
+        deploy.IncompatibleAppError, match="built for arm64-v8a.*only runs armeabi-v7a"
+    ):
+        deploy.install(conn, apk, PKG, 42)
+    assert not conn.pushed
+
+
+def test_install_accepts_an_app_the_cpu_runs(tmp_path):
+    conn = FakeConnection(
+        responses={
+            "getprop ro.product.cpu.abilist": "arm64-v8a,armeabi-v7a,armeabi",
+            "pm install": "Success",
+        },
+        installed={PKG: (42, "1.0")},
+    )
+    apk = _native_apk(tmp_path / "app.apk", "armeabi-v7a", "x86")
+    deploy.install(conn, apk, PKG, 42)
+
+
+def test_install_explains_a_no_matching_abis_failure(tmp_path):
+    conn = FakeConnection(
+        responses={
+            "getprop ro.product.cpu.abilist": "",
+            "pm install": "Failure [INSTALL_FAILED_NO_MATCHING_ABIS: Failed to extract native "
+            "libraries, res=-113]",
+        }
+    )
+    apk = _native_apk(tmp_path / "app.apk", "arm64-v8a")
+    with pytest.raises(deploy.IncompatibleAppError, match="Play Store.*NO_MATCHING_ABIS"):
+        deploy.install(conn, apk, PKG, 42)
