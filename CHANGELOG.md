@@ -3,6 +3,16 @@
 Each version is released as a GitHub release tagged `v<version>`. Home Assistant's app
 store offers the app's new version once it's released.
 
+## 0.3.0
+
+### Added
+
+- Change one Shield's settings: **Settings** on each Shield in the Shields tab, or
+  `shield-manager settings show|set`. Covers the screensaver and sleep timers, font size,
+  clock format, automatic date and time, animation speeds, HDMI-CEC, system and surround
+  sound, the default keyboard, captions and accessibility. Each change is read back to
+  confirm the Shield kept it. Settings that could disconnect a Shield are never offered.
+
 ## 0.2.3
 
 ### Security

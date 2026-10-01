@@ -37,6 +37,7 @@ this repository's source.
   - [Mirror a reference Shield](#mirror-a-reference-shield)
   - [Check for updates](#check-for-updates)
   - [Choose GitHub sources](#choose-github-sources)
+  - [Change a Shield's settings](#change-a-shields-settings)
 - [How apps are found for mixed Shield models](#how-apps-are-found-for-mixed-shield-models)
   - [Use a download link](#use-a-download-link)
 - [Where your data is stored](#where-your-data-is-stored)
@@ -223,6 +224,12 @@ Add, group and remove Shields, pick the reference, check a connection, list each
 apps (system apps too, if you tick the box), and install an APK or APK bundle (`.apkm`,
 `.xapk`, `.apks`) you upload.
 
+Tap **Settings** on a Shield to view and change its settings: screensaver and sleep timers,
+font size, clock format, animation speeds, HDMI-CEC, system and surround sound, the default
+keyboard, captions and accessibility. Pick another Shield at the top of the sheet. A change
+applies right away, and the page reads it back to confirm the Shield kept it. See
+[Change a Shield's settings](#change-a-shields-settings) for what's left out and why.
+
 ### Install progress
 
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
@@ -361,6 +368,23 @@ built in.
 `shield-manager source remove org.example.app` stops using GitHub for that app. It works for
 the built-in ones too. Downloads are still only installed when they're signed by the same
 developer as the copy on your Shields.
+
+### Change a Shield's settings
+
+```sh
+shield-manager settings list                          # what can be changed, and to what
+shield-manager settings show bedroom                  # bedroom's current settings
+shield-manager settings set bedroom font-size Large   # change one
+shield-manager settings set bedroom screensaver-after "30 min"
+shield-manager settings set bedroom hdmi-cec off
+shield-manager settings set bedroom keyboard gboard   # keyboards installed on that Shield
+```
+
+A value is one of the choices `settings list` shows (any case; the start of one is enough
+when it's the only match). Only a fixed list of settings can be changed. Network
+debugging, Wi-Fi, the device name and similar settings are left out because changing them
+could disconnect the Shield. Nvidia's own options (AI upscaling, display and audio modes)
+are kept in its apps' private data, which needs root.
 
 ## How apps are found for mixed Shield models
 

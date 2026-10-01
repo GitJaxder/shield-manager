@@ -17,7 +17,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from shield_manager import appinfo, bundle, deploy, fleet, screen
+from shield_manager import appinfo, bundle, deploy, fleet, screen, settings
 from shield_manager.apk import ApkError
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
@@ -845,6 +845,38 @@ class Api:
                 entry = {"package": package, "device": r["device"], "ok": error is None}
                 results.append(entry if error is None else {**entry, "error": error})
         return {"packages": packages, "results": results}
+
+    # -- settings ------------------------------------------------------------------------
+
+    def device_settings(self, name: str) -> dict:
+        """One Shield's settings from the safe list, grouped, with what each can be."""
+        device = self._get(name)
+        result = self._on_device(device, settings.read)
+        if not result["ok"]:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, result["error"])
+        groups = [
+            {"name": g, "settings": [c.as_dict() for c in result["result"] if c.setting.group == g]}
+            for g in settings.GROUPS
+        ]
+        return {"device": device.name, "groups": groups}
+
+    def change_setting(self, name: str, setting_id: str, body: dict) -> dict:
+        """Change one setting on one Shield and return it as the Shield now has it."""
+        device = self._get(name)
+        try:
+            settings.get(setting_id)
+        except settings.SettingsError as e:
+            raise ApiError(HTTPStatus.NOT_FOUND, str(e)) from e
+        value = body.get("value")
+        if not isinstance(value, str):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "value must be text")
+        try:
+            with self._connected(device) as conn:
+                return settings.change(conn, setting_id, value).as_dict()
+        except settings.SettingsError as e:
+            raise ApiError(HTTPStatus.CONFLICT, f"{device.name}: {e}") from e
+        except Exception as e:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"{device.name}: {_err(e)}") from e
 
     # -- screens -------------------------------------------------------------------------
 

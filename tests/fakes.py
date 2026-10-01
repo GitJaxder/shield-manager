@@ -1,3 +1,4 @@
+import shlex
 import zipfile
 from pathlib import Path
 
@@ -15,7 +16,17 @@ class FakeConnection:
     the Play Store delivers apps.
     """
 
-    def __init__(self, responses=None, installed=None, splits=None, abis=None, apk_files=None):
+    def __init__(
+        self,
+        responses=None,
+        installed=None,
+        splits=None,
+        abis=None,
+        apk_files=None,
+        settings=None,
+        dreams=(),
+        keyboards=(),
+    ):
         self.responses = responses or {}
         self.installed = dict(installed or {})  # package -> (version_code, version_name)
         self.splits = splits or {}  # package -> extra split APK names
@@ -26,6 +37,10 @@ class FakeConnection:
         self.closed = False
         self.abis = list(abis or [])
         self.apk_files = apk_files or {}  # package -> real APK file served as its base.apk
+        self.settings = dict(settings or {})  # (table, name) -> value
+        self.dreams = list(dreams)  # installed screensaver components
+        self.keyboards = list(keyboards)  # installed input method ids
+        self.enabled_keyboards = set()
 
     def push(self, local_path, device_path, progress_callback=None, **kwargs):
         self.pushed.append((local_path, device_path))
@@ -80,6 +95,21 @@ class FakeConnection:
             if command.startswith(prefix):
                 return response
         args = command.split()
+        if command.startswith("settings "):
+            return self._settings(shlex.split(command)[1:])
+        if command.startswith("cmd package query-services --components"):
+            return "".join(f"{c}\n" for c in self.dreams)
+        if command == "ime list -a -s":
+            return "".join(f"{c}\n" for c in self.keyboards)
+        if command.startswith("ime enable "):
+            self.enabled_keyboards.add(shlex.split(command)[2])
+            return f"Input method {args[2]}: now enabled for user #0"
+        if command.startswith("ime set "):
+            ime = shlex.split(command)[2]
+            if ime not in self.enabled_keyboards:
+                return f"Unknown input method {ime} cannot be selected for user #0"
+            self.settings[("secure", "default_input_method")] = ime
+            return f"Input method {ime} selected for user #0"
         if command == "getprop ro.product.cpu.abilist":
             return ",".join(self.abis)
         if command.startswith("dumpsys package "):
@@ -122,6 +152,19 @@ class FakeConnection:
             if self.installed.pop(args[-1], None) is None:
                 return "Failure [DELETE_FAILED_INTERNAL_ERROR]"
             return "Success"
+        return ""
+
+    def _settings(self, args):
+        verb, table = args[0], args[1]
+        if verb == "list":
+            return "".join(f"{n}={v}\n" for (t, n), v in self.settings.items() if t == table)
+        if verb == "get":
+            return self.settings.get((table, args[2]), "null") + "\n"
+        if verb == "put":
+            self.settings[(table, args[2])] = args[3]
+        if verb == "delete":
+            gone = self.settings.pop((table, args[2]), None) is not None
+            return f"Deleted {int(gone)} rows\n"
         return ""
 
     def close(self):

@@ -147,6 +147,10 @@ class Handler(BaseHTTPRequestHandler):
                 return api.remove_github_source(package)
             case "GET", ["download-page"]:
                 return api.download_page(query)
+            case "GET", ["devices", name, "settings"]:
+                return api.device_settings(name)
+            case "PUT", ["devices", name, "settings", setting_id]:
+                return api.change_setting(name, setting_id, self._json_body())
             case "GET", ["devices", name, "apps"]:
                 return api.device_apps(name, (query.get("system") or ["0"])[0] == "1")
             case "POST", ["store-page"]:

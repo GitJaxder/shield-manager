@@ -164,6 +164,16 @@ def build_parser() -> argparse.ArgumentParser:
     source_remove = source_sub.add_parser("remove", help="stop downloading an app from GitHub")
     source_remove.add_argument("package")
 
+    sets = sub.add_parser("settings", help="view and change one Shield's settings")
+    sets_sub = sets.add_subparsers(dest="action", required=True)
+    sets_sub.add_parser("list", help="list the settings shield-manager can change")
+    show = sets_sub.add_parser("show", help="show a Shield's current settings")
+    show.add_argument("name", help="the Shield")
+    put = sets_sub.add_parser("set", help="change one setting on a Shield")
+    put.add_argument("name", help="the Shield")
+    put.add_argument("setting", help="e.g. font-size (see: settings list)")
+    put.add_argument("value", help='e.g. "Large", on, off, 24 (see: settings show NAME)')
+
     key = sub.add_parser("key", help="manage the ADB key Shields are asked to trust")
     key_sub = key.add_subparsers(dest="action", required=True)
     key_sub.add_parser(
@@ -217,6 +227,53 @@ def _serve_web(args: argparse.Namespace, registry: Registry) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def _run_settings(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager import settings
+
+    if args.action == "list":
+        for group in settings.GROUPS:
+            print(f"{group}:")
+            for s in settings.CATALOG:
+                if s.group == group:
+                    choices = ", ".join(o.label for o in s.options) or {
+                        settings.TOGGLE: "On, Off",
+                        settings.SCREENSAVER: "an installed screensaver",
+                        settings.KEYBOARD: "an installed keyboard",
+                    }.get(s.kind, "")
+                    print(f"  {s.id:<22} {s.label} ({choices})")
+        return 0
+
+    from shield_manager import adb
+
+    device = registry.get(args.name)
+    if args.action == "set":
+        try:
+            settings.get(args.setting)
+        except settings.SettingsError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    print(f"Connecting to {device.name} ({device.address})...", file=sys.stderr)
+    conn = adb.connect(device)
+    try:
+        if args.action == "show":
+            group = None
+            for current in settings.read(conn):
+                if current.setting.group != group:
+                    group = current.setting.group
+                    print(f"{group}:")
+                print(f"  {current.setting.label}: {current.display}  [{current.setting.id}]")
+            return 0
+        print(f"{device.name}: setting {settings.get(args.setting).label}...", file=sys.stderr)
+        current = settings.change(conn, args.setting, args.value)
+        print(f"{device.name}: {current.setting.label} is now {current.display}")
+        return 0
+    except settings.SettingsError as e:
+        print(f"error: {device.name}: {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
 
 
 def _import_key() -> int:
@@ -584,6 +641,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_fleet(args, registry)
         elif args.command == "source":
             return _run_source(args, registry)
+        elif args.command == "settings":
+            return _run_settings(args, registry)
         elif args.command == "key":
             return _import_key()
         elif args.command == "web":
