@@ -117,7 +117,9 @@ shield-manager web            # then open http://127.0.0.1:8765/
 The **Apps** tab is an app-store-style screen listing every app on any of your Shields, with
 its name and icon (read from the Shield), search, and filters for apps that are missing or
 out of date somewhere. Tap an app to install or update it on a Shield; it's copied from a
-Shield that already has the newest version. A banner offers **Sync now** when Shields have
+Shield that already has the newest version. Tick the checkbox on several apps to **Sync** them
+(install or update them on every Shield that's missing or behind) or **Remove** them from the
+Shields you pick, all at once. A banner offers **Sync now** when Shields have
 fallen behind the reference. Sync never removes apps. The **Shields** tab adds, groups and
 removes Shields, picks the reference, and installs an APK file you upload.
 

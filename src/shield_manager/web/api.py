@@ -264,45 +264,74 @@ class Api:
 
     # -- actions (run as background jobs) ------------------------------------------------
 
-    def install_from_shield(self, body: dict) -> dict:
-        """Copy an app from the Shield that has it (the reference if it does) to others."""
-        package = str(body.get("package", "")).strip()
-        if not PACKAGE_NAME.match(package):
+    def _packages(self, body: dict) -> list[str]:
+        raw = body.get("packages")
+        if raw is None:
+            raw = [body.get("package", "")]
+        if not isinstance(raw, list):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "packages must be a list")
+        packages = list(dict.fromkeys(str(p).strip() for p in raw))
+        if not packages or not all(PACKAGE_NAME.match(p) for p in packages):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid package name")
-        targets = self._resolve(body.get("devices"))
+        return packages
+
+    def _label(self, package: str) -> str:
+        meta = self.meta.load().get(package)
+        return meta.label if meta and meta.label else package
+
+    def install_from_shield(self, body: dict) -> dict:
+        """Copy apps from the Shield that has the newest version (preferring the reference).
+
+        Takes "packages" (or a single "package") and optional "devices"; with no devices, every
+        Shield that's missing an app or has an older version gets it.
+        """
+        packages = self._packages(body)
+        names = body.get("devices")
+        targets = self._resolve(names) if names else self.registry.list()
         reference = self.registry.reference
 
         def work(job: Job) -> None:
-            job.progress = "Finding the app on your Shields"
-            holders = {}
-            for r in self._on_devices(self.registry.list(), deploy.package_versions):
-                if r["ok"] and package in r["result"]:
-                    holders[r["device"]] = r["result"][package]
-            if not holders:
-                raise RuntimeError(f"{package} isn't installed on any reachable Shield")
-            newest = max(holders.values())
-            candidates = [d for d, c in holders.items() if c == newest]
-            source = reference if reference in candidates else sorted(candidates)[0]
-            with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
-                job.progress = f"Copying from {source}"
-                with self._connected(self.registry.get(source)) as conn:
-                    apks = deploy.pull_app(conn, package, Path(tmp))
-                for device in targets:
-                    if holders.get(device.name) == newest:
-                        job.results.append({"device": device.name, "ok": True, "skipped": True})
-                        continue
-                    job.progress = f"Installing on {device.name}"
-                    result = self._on_device(
-                        device,
-                        lambda c: asdict(deploy.install(c, apks, package, newest)),
+            job.progress = "Checking your Shields"
+            inventories = {
+                r["device"]: r["result"]
+                for r in self._on_devices(self.registry.list(), deploy.package_versions)
+                if r["ok"]
+            }
+            for package in packages:
+                label = self._label(package)
+                holders = {d: inv[package] for d, inv in inventories.items() if package in inv}
+                if not holders:
+                    job.results.append(
+                        {"package": package, "ok": False, "error": "not on any reachable Shield"}
                     )
-                    job.results.append(result)
+                    continue
+                newest = max(holders.values())
+                todo = [d for d in targets if holders.get(d.name) != newest]
+                if not todo:
+                    continue
+                candidates = [d for d, c in holders.items() if c == newest]
+                source = reference if reference in candidates else sorted(candidates)[0]
+                try:
+                    with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
+                        job.progress = f"Copying {label} from {source}"
+                        with self._connected(self.registry.get(source)) as conn:
+                            apks = deploy.pull_app(conn, package, Path(tmp))
+                        for device in todo:
+                            job.progress = f"Installing {label} on {device.name}"
+                            result = self._on_device(
+                                device,
+                                lambda c, a=apks, p=package, v=newest: asdict(
+                                    deploy.install(c, a, p, v)
+                                ),
+                            )
+                            job.results.append({"package": package, **result})
+                except Exception as e:
+                    job.results.append({"package": package, "ok": False, "error": _err(e)})
             job.progress = ""
 
-        names = ", ".join(d.name for d in targets)
-        meta = self.meta.load().get(package)
-        label = meta.label if meta and meta.label else package
-        return self.jobs.start(f"Install {label} on {names}", work).to_dict()
+        what = self._label(packages[0]) if len(packages) == 1 else f"{len(packages)} apps"
+        where = ", ".join(d.name for d in targets) if names else "every Shield"
+        return self.jobs.start(f"Install {what} on {where}", work).to_dict()
 
     def install_upload(self, apk_path: Path, names: list[str], allow_downgrade: bool) -> dict:
         """Install an uploaded APK. Takes ownership of apk_path's directory."""
@@ -374,13 +403,29 @@ class Api:
         return [j.to_dict() for j in self.jobs.list()]
 
     def uninstall(self, body: dict) -> dict:
-        package = str(body.get("package", "")).strip()
-        if not PACKAGE_NAME.match(package):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid package name")
+        """Remove apps from the given Shields. Each Shield is connected to once."""
+        packages = self._packages(body)
         devices = self._resolve(body.get("devices"))
 
         def action(conn):
-            deploy.uninstall(conn, package)
-            return {"removed": package}
+            present = set(deploy.list_packages(conn, include_system=True))
+            outcome = {}
+            for package in packages:
+                if package not in present:
+                    continue  # nothing to remove on this Shield
+                try:
+                    deploy.uninstall(conn, package)
+                    outcome[package] = None
+                except Exception as e:
+                    outcome[package] = _err(e)
+            return outcome
 
-        return {"package": package, "results": self._on_devices(devices, action)}
+        results = []
+        for r in self._on_devices(devices, action):
+            if not r["ok"]:
+                results += [{"package": p, **r} for p in packages]
+                continue
+            for package, error in r["result"].items():
+                entry = {"package": package, "device": r["device"], "ok": error is None}
+                results.append(entry if error is None else {**entry, "error": error})
+        return {"packages": packages, "results": results}

@@ -122,6 +122,28 @@
     border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  .card { position: relative; }
+  .card-open { position: absolute; inset: 0; border: none; background: none; border-radius: 14px;
+    cursor: pointer; padding: 0; }
+  .card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card > .meta { pointer-events: none; }
+  .iconwrap { position: relative; flex: none; pointer-events: none; }
+  .pickbox { position: absolute; top: -7px; left: -7px; z-index: 2; pointer-events: auto;
+    width: 26px; height: 26px; margin: 0; appearance: none; -webkit-appearance: none; cursor: pointer;
+    border-radius: 50%; border: 2px solid var(--border); background: var(--panel);
+    display: grid; place-items: center; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+  .pickbox::after { content: ""; width: 6px; height: 11px; border: solid var(--accent-ink);
+    border-width: 0 3px 3px 0; transform: translateY(-1px) rotate(45deg); opacity: 0; }
+  .pickbox:checked { background: var(--accent); border-color: var(--accent); }
+  .pickbox:checked::after { opacity: 1; }
+  .pickbox:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  #selbar { border-top: 1px solid var(--border); background: var(--accent-soft); }
+  #selbar .inner { max-width: 1100px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 8px;
+    align-items: center; flex-wrap: wrap; }
+  #selbar .count { flex: 1; font-weight: 600; min-width: 90px; }
+  .pick { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .pick input { width: 20px; height: 20px; accent-color: var(--accent); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -133,6 +155,15 @@
       <button role="tab" data-tab="apps" aria-selected="true">Apps</button>
       <button role="tab" data-tab="shields" aria-selected="false">Shields</button>
     </nav>
+  </div>
+  <div id="selbar" hidden>
+    <div class="inner">
+      <span class="count" id="sel-count">0 selected</span>
+      <button class="btn small primary" id="sel-sync">Sync</button>
+      <button class="btn small danger" id="sel-remove">Remove…</button>
+      <button class="btn small" id="sel-all">Select all</button>
+      <button class="btn small" id="sel-clear">Clear</button>
+    </div>
   </div>
 </header>
 
@@ -184,7 +215,7 @@
 <script>
 // Every URL is relative so the page works behind a path prefix (e.g. Home Assistant ingress).
 const $ = (s, el = document) => el.querySelector(s);
-const state = { catalog: null, devices: [], filter: "all", q: "" };
+const state = { catalog: null, devices: [], filter: "all", q: "", selected: new Set(), shown: [] };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -217,8 +248,13 @@ function summarize(job) {
   if (job.error) return job.error;
   const bad = job.results.filter((r) => !r.ok);
   const done = job.results.filter((r) => r.ok && !r.skipped);
-  if (bad.length) return bad.map((r) => `${r.device}: ${r.error || Object.values(r.failed || {})[0] || "failed"}`).join("; ");
-  if (!job.results.length) return "Nothing to do";
+  const who = (r) => [r.package && appLabel(r.package), r.device].filter(Boolean).join(" on ");
+  if (bad.length) {
+    const msg = bad.map((r) => `${who(r)}: ${r.error || Object.values(r.failed || {})[0] || "failed"}`).join("; ");
+    return done.length ? `${done.length} done, ${bad.length} failed. ${msg}` : msg;
+  }
+  if (!job.results.length) return "Nothing to do, already up to date";
+  if (done.some((r) => r.package)) return `${done.length} install${done.length > 1 ? "s" : ""} done`;
   return done.length ? `Done on ${done.map((r) => r.device).join(", ")}` : "Already up to date";
 }
 
@@ -277,6 +313,11 @@ function statusLine(app) {
   return `<span class="ok">On every Shield</span>`;
 }
 
+function appLabel(pkg) {
+  const app = state.catalog?.apps.find((a) => a.package === pkg);
+  return (app && app.label) || pkg;
+}
+
 function renderApps() {
   const box = $("#apps");
   const cat = state.catalog;
@@ -292,14 +333,22 @@ function renderApps() {
   if (state.filter === "missing") apps = apps.filter((a) => appState(a).missing.length);
   if (state.filter === "updates") apps = apps.filter((a) => appState(a).older.length);
   apps.sort((a, b) => (a.label || a.package).localeCompare(b.label || b.package, undefined, {sensitivity: "base"}));
+  state.shown = apps.map((a) => a.package);
+  const known = new Set(cat.apps.map((a) => a.package));
+  for (const p of [...state.selected]) if (!known.has(p)) state.selected.delete(p);
+  renderSelbar();
   box.innerHTML = apps.length
-    ? `<div class="grid">${apps.map((a) => `
-        <button class="card" data-pkg="${esc(a.package)}">
-          ${tile(a)}
-          <div class="meta"><div class="name">${esc(a.label || a.package)}</div>
+    ? `<div class="grid">${apps.map((a) => {
+        const on = state.selected.has(a.package);
+        const name = esc(a.label || a.package);
+        return `<div class="card${on ? " picked" : ""}" data-pkg="${esc(a.package)}">
+          <button class="card-open" aria-label="${name}"></button>
+          <div class="iconwrap">${tile(a)}<input type="checkbox" class="pickbox" aria-label="Select ${name}"${on ? " checked" : ""}></div>
+          <div class="meta"><div class="name">${name}</div>
           ${a.label ? `<div class="pkg">${esc(a.package)}</div>` : ""}
           <div class="status">${statusLine(a)}</div></div>
-        </button>`).join("")}</div>`
+        </div>`;
+      }).join("")}</div>`
     : `<div class="empty">${q ? "No apps match your search." : "Nothing here."}</div>`;
 
   const offline = cat.shields.filter((s) => !s.ok);
@@ -404,8 +453,94 @@ function openApp(pkg) {
 $("#sheet").addEventListener("click", (ev) => { if (ev.target.id === "sheet") ev.target.close(); });
 $("#apps").addEventListener("click", (ev) => {
   const card = ev.target.closest(".card");
-  if (card) openApp(card.dataset.pkg);
+  if (card && ev.target.closest(".card-open")) openApp(card.dataset.pkg);
 });
+$("#apps").addEventListener("change", (ev) => {
+  if (!ev.target.classList.contains("pickbox")) return;
+  const card = ev.target.closest(".card");
+  const pkg = card.dataset.pkg;
+  if (ev.target.checked) state.selected.add(pkg); else state.selected.delete(pkg);
+  card.classList.toggle("picked", ev.target.checked);
+  renderSelbar();
+});
+
+// ---- multi-select ----------------------------------------------------------------
+function clearSelection() {
+  state.selected.clear();
+  renderApps();
+}
+
+function renderSelbar() {
+  const n = state.selected.size;
+  $("#selbar").hidden = !n;
+  $("#sel-count").textContent = `${n} selected`;
+  const allShown = state.shown.length && state.shown.every((p) => state.selected.has(p));
+  $("#sel-all").textContent = allShown ? "Clear" : "Select all";
+}
+
+$("#sel-clear").onclick = clearSelection;
+$("#sel-all").onclick = () => {
+  const allShown = state.shown.every((p) => state.selected.has(p));
+  for (const p of state.shown) allShown ? state.selected.delete(p) : state.selected.add(p);
+  renderApps();
+};
+
+$("#sel-sync").onclick = async () => {
+  // Installs or updates each selected app on every Shield that's missing it or behind.
+  const packages = [...state.selected];
+  const b = $("#sel-sync");
+  b.disabled = true;
+  try {
+    track(await api("POST", "install-from-shield", {packages}));
+    clearSelection();
+  } catch (e) { notice(e.message, "err"); b.disabled = false; }
+};
+
+$("#sel-remove").onclick = () => {
+  const packages = [...state.selected];
+  const shields = state.catalog.shields.filter((s) => s.ok);
+  const names = packages.map(appLabel);
+  $("#sheet-body").innerHTML = `
+    <div class="sheet-head"><div style="min-width:0"><h2>Remove ${packages.length} app${packages.length > 1 ? "s" : ""}</h2>
+      <div class="muted" style="font-size:14px">${esc(names.slice(0, 6).join(", "))}${names.length > 6 ? ` and ${names.length - 6} more` : ""}</div></div>
+      <button class="close" aria-label="Close">×</button></div>
+    <div class="section-title" style="margin-top:0">From these Shields</div>
+    <div class="rows">${shields.map((s) => {
+      const has = packages.filter((p) => s.name in (state.catalog.apps.find((a) => a.package === p)?.versions || {})).length;
+      return `<label class="pick"><input type="checkbox" value="${esc(s.name)}"${has ? "" : " disabled"}>
+        <span class="grow"><strong>${esc(s.name)}</strong>${s.reference ? '<span class="star">REFERENCE</span>' : ""}
+        <span class="muted" style="display:block;font-size:13px">${has ? `has ${has} of these` : "has none of these"}</span></span></label>`;
+    }).join("")}</div>
+    <p class="err" style="font-size:13px;margin:12px 0">Removing an app deletes its data on that Shield.${shields.some((s) => s.reference) ? " Removing from the reference means sync stops copying it to the others." : ""}</p>
+    <button class="btn danger" style="width:100%" id="confirm-remove" disabled>Pick at least one Shield</button>`;
+  const sheet = $("#sheet");
+  const body = $("#sheet-body");
+  const confirmBtn = $("#confirm-remove");
+  const picked = () => [...body.querySelectorAll("input:checked")].map((i) => i.value);
+  body.onchange = () => {
+    const n = picked().length;
+    confirmBtn.disabled = !n;
+    confirmBtn.textContent = n ? `Remove from ${n} Shield${n > 1 ? "s" : ""}` : "Pick at least one Shield";
+  };
+  body.onclick = async (ev) => {
+    const b = ev.target.closest("button");
+    if (!b) return;
+    if (b.classList.contains("close")) return sheet.close();
+    if (b.id !== "confirm-remove") return;
+    b.disabled = true;
+    b.textContent = "Removing…";
+    try {
+      const res = await api("POST", "uninstall", {packages, devices: picked()});
+      const bad = res.results.filter((r) => !r.ok);
+      const done = res.results.filter((r) => r.ok).length;
+      notice(bad.length ? `Removed ${done}. Failed: ${bad.map((r) => `${appLabel(r.package)} on ${r.device}: ${r.error}`).join("; ")}` : `Removed ${done} app${done === 1 ? "" : "s"}`, "", bad.length ? 0 : 5000);
+      sheet.close();
+      clearSelection();
+      loadCatalog();
+    } catch (e) { notice(e.message, "err"); b.disabled = false; body.onchange(); }
+  };
+  sheet.showModal();
+};
 $("#q").addEventListener("input", (ev) => { state.q = ev.target.value; renderApps(); });
 $("#filters").addEventListener("click", (ev) => {
   const b = ev.target.closest("button");
