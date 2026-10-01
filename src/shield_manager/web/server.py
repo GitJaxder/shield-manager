@@ -8,6 +8,7 @@ apps on your Shields.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import tempfile
 from collections.abc import Iterable
@@ -28,7 +29,9 @@ from shield_manager.web.api import Api, ApiError, Connector
 # cross-origin without a CORS preflight, which this server never approves, so other
 # websites can't drive the API from your browser.
 CSRF_HEADER = "X-Shield-Manager"
-CSP = "default-src 'self' 'unsafe-inline'; img-src 'self' data:"
+# frame-ancestors: other websites can't show the page in a hidden frame and trick clicks
+# out of you. Home Assistant's sidebar frames it from its own origin, which is 'self'.
+CSP = "default-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'"
 MAX_APK_BYTES = 4 * 1024**3
 UPLOAD_SUFFIXES = (".apk", *bundle.SUFFIXES)
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -81,11 +84,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(e)})
 
     def _host_allowed(self) -> bool:
-        # Guards against DNS rebinding when bound to localhost.
-        if not self.server.loopback_only:
+        """Guards against DNS rebinding: a website that points its own hostname at this
+        server would send that hostname here. Addresses typed as IPs, localhost and names
+        given with --hostname are accepted. Clients on the --allow-from list are trusted
+        proxies (such as Home Assistant's ingress), which pass on their own Host."""
+        if self.server.allowed_clients:
             return True
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
-        return host in LOOPBACK
+        host = (self.headers.get("Host") or "").strip()
+        if host.startswith("["):
+            host = host[1:].split("]", 1)[0]
+        elif host.count(":") == 1:
+            host = host.split(":", 1)[0]
+        host = host.lower().rstrip(".")
+        if host in LOOPBACK or host in self.server.hostnames:
+            return True
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return True
 
     def _route(self, method: str, path: str, query: dict[str, list[str]]) -> Any:
         api = self.server.api
@@ -144,9 +161,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _content_length(self) -> int:
         try:
-            return int(self.headers.get("Content-Length") or 0)
+            length = int(self.headers.get("Content-Length") or 0)
         except ValueError as e:
             raise ApiError(HTTPStatus.BAD_REQUEST, "bad Content-Length") from e
+        if length < 0:  # rfile.read(-1) would read until the client hangs up
+            raise ApiError(HTTPStatus.BAD_REQUEST, "bad Content-Length")
+        return length
 
     def _json_body(self) -> dict:
         length = self._content_length()
@@ -188,7 +208,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_static(self) -> None:
         page = resources.files("shield_manager.web").joinpath("static/index.html").read_bytes()
-        self._send_bytes(page, "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
+        headers = {"Content-Security-Policy": CSP, "X-Frame-Options": "SAMEORIGIN"}
+        self._send_bytes(page, "text/html; charset=utf-8", headers)
 
     def _send_image(self, name: str) -> None:
         path = self.server.api.image(name)
@@ -230,12 +251,13 @@ class UiServer(ThreadingHTTPServer):
         api: Api,
         verbose: bool = False,
         allowed_clients: Iterable[str] = (),
+        hostnames: Iterable[str] = (),
     ) -> None:
         super().__init__(address, Handler)
         self.api = api
         self.verbose = verbose
-        self.loopback_only = address[0] in LOOPBACK
         self.allowed_clients = frozenset(allowed_clients)
+        self.hostnames = frozenset(h.lower().rstrip(".") for h in hostnames)
 
 
 def create_server(
@@ -246,12 +268,16 @@ def create_server(
     verbose: bool = False,
     allowed_clients: Iterable[str] = (),
     cache_dir: Path | None = None,
+    hostnames: Iterable[str] = (),
     downloads: Downloader | None | str = "default",
 ) -> UiServer:
     """Build the UI server. allowed_clients, if given, limits which IPs may connect.
+    hostnames are names besides localhost and IP addresses the page may be opened by.
 
     downloads is where apps come from when no Shield has a copy a target can run: the
     built-in GitHub source by default, or None to turn downloads off.
     """
     api = Api(registry, connect, cache_dir, downloads)
-    return UiServer((host, port), api, verbose=verbose, allowed_clients=allowed_clients)
+    return UiServer(
+        (host, port), api, verbose=verbose, allowed_clients=allowed_clients, hostnames=hostnames
+    )

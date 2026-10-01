@@ -148,18 +148,65 @@ def _lp(*items):
     return b"".join(struct.pack("<I", len(i)) + i for i in items)
 
 
-def sign_apk(path, *certs, block_id=0x7109871A):
-    """Add an APK Signature Scheme v2-style block naming certs (DER bytes) to a zip file.
+_DEVELOPERS: dict[bytes, tuple] = {}
 
-    Only the parts apk.signers reads are filled in; digests and signatures are empty.
-    """
+
+def developer(name: bytes):
+    """A signing key and self-signed certificate (DER) standing for a developer, the same
+    for the same name throughout the test run."""
+    if name not in _DEVELOPERS:
+        import datetime
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name.decode())])
+        now = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(1)
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=3650))
+            .sign(key, hashes.SHA256())
+        )
+        _DEVELOPERS[name] = (key, cert.public_bytes(serialization.Encoding.DER))
+    return _DEVELOPERS[name]
+
+
+def fingerprint(name: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(developer(name)[1]).hexdigest()
+
+
+def _content_digest(data: bytes) -> bytes:
+    """APK Signature Scheme v2 SHA-256 digest of a zip that has no signing block yet."""
+    import hashlib
+    import struct
+
+    eocd = data.rfind(b"PK\x05\x06")
+    (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
+    chunks = []
+    for section in (data[:cd_offset], data[cd_offset:eocd], data[eocd:]):
+        for i in range(0, len(section), 1 << 20):
+            chunk = section[i : i + (1 << 20)]
+            chunks.append(hashlib.sha256(b"\xa5" + struct.pack("<I", len(chunk)) + chunk).digest())
+    return hashlib.sha256(b"\x5a" + struct.pack("<I", len(chunks)) + b"".join(chunks)).digest()
+
+
+def _insert_block(path, value, block_id):
+    """Put an APK Signing Block holding (block_id, value) before the central directory."""
     import struct
 
     data = Path(path).read_bytes()
     eocd = data.rfind(b"PK\x05\x06")
     (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
-    signers = [_lp(_lp(_lp(), _lp(*certs), _lp()), _lp(), b"") for _ in certs[:1]]
-    value = _lp(_lp(*signers))
     pair = struct.pack("<QI", len(value) + 4, block_id) + value
     size = len(pair) + 8 + 16
     block = struct.pack("<Q", size) + pair + struct.pack("<Q", size) + b"APK Sig Block 42"
@@ -169,9 +216,46 @@ def sign_apk(path, *certs, block_id=0x7109871A):
     return Path(path)
 
 
+def sign_apk(path, name=b"dev", block_id=0x7109871A, digest_of=None):
+    """Sign a zip file with APK Signature Scheme v2 (or v3, by block_id) as the developer
+    called name, with ECDSA SHA-256. digest_of, if given, is signed in place of the file's
+    own content digest, to make a signature that doesn't match its file."""
+    import struct
+
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key, cert = developer(name)
+    algorithm = 0x0201
+    digest = _content_digest(Path(digest_of or path).read_bytes())
+    v3 = block_id != 0x7109871A
+    sdks = struct.pack("<II", 24, 0x7FFFFFFF) if v3 else b""
+    digests = _lp(struct.pack("<I", algorithm) + _lp(digest))
+    signed_data = _lp(digests) + _lp(_lp(cert)) + sdks + _lp(b"")
+    signature = key.sign(signed_data, ec.ECDSA(hashes.SHA256()))
+    public_key = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    signer = (
+        _lp(signed_data)
+        + sdks
+        + _lp(_lp(struct.pack("<I", algorithm) + _lp(signature)))
+        + _lp(public_key)
+    )
+    return _insert_block(path, _lp(_lp(signer)), block_id)
+
+
+def forge_signing_block(path, cert, block_id=0x7109871A):
+    """Add a v2-style signing block that names cert (DER bytes) but signs nothing, the way
+    someone without the developer's key could copy their certificate."""
+    signed_data = _lp(_lp()) + _lp(_lp(cert)) + _lp(_lp())
+    signer = _lp(signed_data) + _lp(_lp()) + _lp(b"")
+    return _insert_block(path, _lp(_lp(signer)), block_id)
+
+
 def real_apk(path, package, version_code, version_name="1.0", abis=(), cert=None):
     """Write an APK with a real binary manifest, native code for abis, and (if cert is
-    given) a signing block naming that certificate."""
+    given) a v2 signature by the developer called cert (see developer())."""
     strings = ["versionCode", "versionName", "package", "manifest", package, version_name]
     attrs = [
         ("versionCode", TYPE_INT_DEC, version_code),

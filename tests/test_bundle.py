@@ -170,3 +170,11 @@ def test_github_downloads_a_bundle_asset(tmp_path):
         Wanted(PKG, 5000315, "1.3.32", ["armeabi-v7a"]), tmp_path / "dl"
     )
     assert paths[0].name == "base.apk" and len(paths) == 6
+
+
+def test_unpack_refuses_a_bundle_that_unpacks_too_large(tmp_path, monkeypatch):
+    # A zip bomb: small to upload or download, huge once unpacked.
+    path = make_apkm(tmp_path)
+    monkeypatch.setattr(bundle, "MAX_UNPACKED_BYTES", 1000)
+    with pytest.raises(bundle.BundleError, match="more than 4 GB"):
+        bundle.unpack(path, tmp_path / "out")

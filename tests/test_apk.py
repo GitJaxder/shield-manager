@@ -53,21 +53,58 @@ def test_text_manifest_rejected():
         parse_manifest(b"<?xml version='1.0'?><manifest/>")
 
 
-def test_signers_reads_v2_and_v3_certificates(tmp_path):
-    import hashlib
+def _zip(path, **entries):
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in {"AndroidManifest.xml": b"x", **entries}.items():
+            zf.writestr(name, data)
+    return path
+
+
+def test_signers_verifies_v2_and_v3_signatures(tmp_path):
     import zipfile
 
     from shield_manager.apk import signers
-    from tests.fakes import sign_apk
+    from tests.fakes import fingerprint, sign_apk
 
     for block_id in (0x7109871A, 0xF05368C0):
-        path = tmp_path / f"{block_id}.apk"
-        with zipfile.ZipFile(path, "w") as zf:
-            zf.writestr("AndroidManifest.xml", b"x")
-        sign_apk(path, b"cert-a", block_id=block_id)
-        assert signers(path) == {hashlib.sha256(b"cert-a").hexdigest()}
+        path = sign_apk(_zip(tmp_path / f"{block_id}.apk"), b"cert-a", block_id=block_id)
+        assert signers(path) == {fingerprint(b"cert-a")}
         with zipfile.ZipFile(path) as zf:  # still a valid zip
             assert zf.read("AndroidManifest.xml") == b"x"
+
+
+def test_signers_ignores_a_copied_certificate(tmp_path):
+    # Anyone can copy a developer's certificate out of their APK; without their key the
+    # file must not count as theirs.
+    from shield_manager.apk import signers
+    from tests.fakes import developer, forge_signing_block
+
+    path = forge_signing_block(_zip(tmp_path / "forged.apk"), developer(b"cert-a")[1])
+    assert signers(path) == set()
+
+
+def test_signers_rejects_changed_contents(tmp_path):
+    # A real signature taken from another file (here: same entries, different content).
+    from shield_manager.apk import signers
+    from tests.fakes import sign_apk
+
+    original = _zip(tmp_path / "original.apk", **{"classes.dex": b"good"})
+    tampered = _zip(tmp_path / "tampered.apk", **{"classes.dex": b"evil"})
+    sign_apk(tampered, b"cert-a", digest_of=original)
+    assert signers(tampered) == set()
+
+
+def test_signers_rejects_a_flipped_byte(tmp_path):
+    from shield_manager.apk import signers
+    from tests.fakes import sign_apk
+
+    path = sign_apk(_zip(tmp_path / "a.apk", **{"classes.dex": b"good code"}), b"cert-a")
+    data = bytearray(path.read_bytes())
+    data[data.index(b"good code")] ^= 1
+    path.write_bytes(bytes(data))
+    assert signers(path) == set()
 
 
 def test_signers_of_an_unsigned_or_broken_apk_is_empty(tmp_path):

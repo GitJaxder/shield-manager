@@ -182,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="IP",
         help="only accept connections from this IP (repeatable), e.g. a reverse proxy",
     )
+    web.add_argument(
+        "--hostname",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a name the page is opened by besides its IP address and localhost, e.g. "
+        "shield.lan (repeatable); other names are refused, so websites can't reach the UI "
+        "through DNS rebinding",
+    )
 
     return parser
 
@@ -190,7 +199,12 @@ def _serve_web(args: argparse.Namespace, registry: Registry) -> int:
     from shield_manager.web import create_server
 
     server = create_server(
-        registry, args.host, args.port, verbose=True, allowed_clients=args.allow_from
+        registry,
+        args.host,
+        args.port,
+        verbose=True,
+        allowed_clients=args.allow_from,
+        hostnames=args.hostname,
     )
     host = f"[{args.host}]" if ":" in args.host else args.host
     print(f"Shield Manager UI on http://{host}:{server.server_port}/ (Ctrl+C to stop)")

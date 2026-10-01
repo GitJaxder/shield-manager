@@ -17,6 +17,8 @@ from pathlib import Path
 from shield_manager.apk import ApkError, ApkInfo, read_apk_info
 
 SUFFIXES = (".apkm", ".xapk", ".apks", ".zip")
+# The most a bundle may unpack to, so a zip bomb can't fill the disk.
+MAX_UNPACKED_BYTES = 4 * 1024**3
 
 # CPU type in a split's file name, e.g. split_config.arm64_v8a.apk, base-armeabi_v7a.apk.
 _SPLIT_ABI = re.compile(r"(?:^|[._-])(arm64_v8a|armeabi_v7a|armeabi|x86_64|x86)(?=[._-]|$)")
@@ -59,12 +61,21 @@ def unpack(path: str | Path, dest: Path) -> list[Path]:
                 f"{Path(path).name} is encrypted (older APKMirror files only open in the "
                 "APKMirror Installer app); download it again or pick another version"
             )
+        too_big = BundleError(f"{Path(path).name} unpacks to more than 4 GB, so it wasn't opened")
+        if sum(i.file_size for i in entries) > MAX_UNPACKED_BYTES:
+            raise too_big
         dest.mkdir(parents=True, exist_ok=True)
-        paths = []
+        paths, total = [], 0
         for i, info in enumerate(entries):
             name = Path(info.filename).name
             out = dest / (name if name not in {p.name for p in paths} else f"{i}-{name}")
-            out.write_bytes(zf.read(info))
+            # Streamed rather than read whole, and counted as a second guard.
+            with zf.open(info) as src, out.open("wb") as dst:
+                while chunk := src.read(1024**2):
+                    total += len(chunk)
+                    if total > MAX_UNPACKED_BYTES:
+                        raise too_big
+                    dst.write(chunk)
             paths.append(out)
     return sorted(paths, key=lambda p: not _is_base(p.name))
 
