@@ -120,6 +120,10 @@ class Handler(BaseHTTPRequestHandler):
                 return api.device_info(name)
             case "GET", ["now-showing"]:
                 return api.now_showing()
+            case "GET", ["os-updates"]:
+                return api.os_updates()
+            case "POST", ["os-updates", "open"]:
+                return api.open_update_screen(self._json_body())
             case "PUT", ["reference"]:
                 return api.set_reference(self._json_body())
             case "GET", ["catalog"]:

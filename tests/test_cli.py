@@ -273,3 +273,21 @@ def test_source_set_list_remove(registry, capsys):
     assert main(["source", "remove", "org.xbmc.kodi"], registry=registry) == 1
     assert main(["source", "set", "a.b", "nope"], registry=registry) == 2
     assert "not a GitHub repository" in capsys.readouterr().err
+
+
+def test_os_status_flags_a_shield_behind_its_twin(registry, fleet, capsys):
+    from tests.test_osupdate import getprop, shield
+
+    fleet["den"] = shield(getprop(version="9.2.4"))
+    fleet["garage"] = shield(getprop(version="9.1.0"))
+    assert main(["os", "status"], registry=registry) == 0
+    out = capsys.readouterr().out
+    assert "den: SHIELD TV Pro (2019) · Shield Experience 9.2.4" in out
+    assert "garage: " in out and "BEHIND: another SHIELD TV Pro (2019) runs 9.2.4" in out
+    assert "Update due on: garage" in out
+
+
+def test_os_open_needs_a_target(registry, fleet, capsys):
+    assert main(["os", "open"], registry=registry) == 2
+    assert main(["os", "open", "-d", "den"], registry=registry) == 0
+    assert "den: opened System upgrade on the TV" in capsys.readouterr().out
