@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -15,7 +16,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from shield_manager import appinfo, deploy, fleet
+from shield_manager import appinfo, deploy, fleet, screen
 from shield_manager.apk import ApkError, read_apk_info
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
@@ -39,6 +40,9 @@ from shield_manager.web.jobs import (
 
 DEVICE_NAME = re.compile(r"^[\w.-]+$")
 PACKAGE_NAME = re.compile(r"^[A-Za-z0-9_.]+$")
+# Viewers asking within this many seconds of the last capture share it instead of taking
+# another, so several open pages don't multiply the work on the Shields.
+SCREEN_MAX_AGE_S = 5.0
 
 Connector = Callable[[Device], Any]
 
@@ -109,6 +113,8 @@ class Api:
         # Apps whose details couldn't be read, so they aren't retried on every page load.
         # Kept in memory only, so a restart (or a new version) tries again.
         self._meta_failed: dict[str, int] = {}
+        self._screens: dict[str, dict] = {}  # device name -> latest capture
+        self._screen_locks: dict[str, threading.Lock] = {}
 
     # -- helpers -------------------------------------------------------------------------
 
@@ -518,3 +524,54 @@ class Api:
                 entry = {"package": package, "device": r["device"], "ok": error is None}
                 results.append(entry if error is None else {**entry, "error": error})
         return {"packages": packages, "results": results}
+
+    # -- screens -------------------------------------------------------------------------
+
+    def now_showing(self) -> list[dict]:
+        """What each Shield is showing: the foreground app and a fresh screenshot."""
+        devices = self.registry.list()
+        if not devices:
+            return []
+        with ThreadPoolExecutor(max_workers=min(8, len(devices))) as pool:
+            return list(pool.map(self._now_showing, devices))
+
+    def _now_showing(self, device: Device) -> dict:
+        lock = self._screen_locks.setdefault(device.name, threading.Lock())
+        with lock:  # a second viewer waits for the capture in progress and reuses it
+            last = self._screens.get(device.name)
+            if last is None or time.time() - last["captured_at"] >= SCREEN_MAX_AGE_S:
+                last = self._screens[device.name] = self._capture(device)
+        return {k: v for k, v in last.items() if k != "png"} | {"image": bool(last.get("png"))}
+
+    def _capture(self, device: Device) -> dict:
+        entry: dict[str, Any] = {"device": device.name, "captured_at": time.time()}
+        try:
+            with self._connected(device) as conn:
+                activity = screen.current_activity(conn)
+                if activity.awake:
+                    try:
+                        entry["png"] = screen.screenshot(conn)
+                    except Exception as e:  # still report the app in front
+                        entry["image_error"] = _err(e)
+        except Exception as e:
+            return {**entry, "ok": False, "error": _err(e)}
+        package = activity.package
+        meta = self.meta.load().get(package) if package else None
+        label = (meta.label if meta else None) or screen.SYSTEM_SCREENS.get(package or "")
+        if activity.state == "Dreaming":
+            label = "Screensaver"
+        return {
+            **entry,
+            "ok": True,
+            "awake": activity.awake,
+            "state": activity.state,
+            "package": package,
+            "label": label,
+            "icon": meta.icon if meta else None,
+        }
+
+    def screen_image(self, name: str) -> bytes:
+        png = self._screens.get(name, {}).get("png")
+        if not png:
+            raise ApiError(HTTPStatus.NOT_FOUND, "no screenshot yet")
+        return png

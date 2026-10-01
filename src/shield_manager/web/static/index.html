@@ -162,6 +162,17 @@
   #selbar .count { flex: 1; font-weight: 600; min-width: 90px; }
   .pick { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
   .pick input { width: 20px; height: 20px; accent-color: var(--accent); }
+  /* screens tab */
+  .screens { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  @media (max-width: 520px) { .screens { grid-template-columns: 1fr; } }
+  .screen { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); overflow: hidden; }
+  .screen .shot { aspect-ratio: 16 / 9; background: #000; display: grid; place-items: center;
+    color: #9aa4af; font-size: 14px; text-align: center; padding: 0; }
+  .screen .shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen .cap { display: flex; gap: 10px; align-items: center; padding: 10px 12px; }
+  .screen .cap .icon { width: 36px; height: 36px; border-radius: 9px; font-size: 15px; }
+  .screen .cap .grow { flex: 1; min-width: 0; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -171,6 +182,7 @@
     <div class="title"><div class="logo">S</div><h1>Shield Manager</h1></div>
     <nav role="tablist">
       <button role="tab" data-tab="apps" aria-selected="true">Apps</button>
+      <button role="tab" data-tab="screens" aria-selected="false">Screens</button>
       <button role="tab" data-tab="shields" aria-selected="false">Shields</button>
     </nav>
   </div>
@@ -198,6 +210,12 @@
     </div>
     <div id="sync-banner"></div>
     <div id="apps"><div class="empty">Loading apps from your Shields…</div></div>
+  </div>
+
+  <div id="tab-screens" hidden>
+    <div id="screens"><div class="empty">Looking at your Shields…</div></div>
+    <p class="muted" style="font-size:13px">Refreshes every 10 seconds while this tab is open. Protected
+      video (Netflix, Disney+ and most paid streaming apps) shows as black, but the app name still shows.</p>
   </div>
 
   <div id="tab-shields" hidden>
@@ -721,11 +739,50 @@ $("#install").addEventListener("submit", async (ev) => {
   } catch (e) { notice(e.message, "err"); } finally { b.disabled = false; b.textContent = "Install"; }
 });
 
+// ---- screens ----------------------------------------------------------------------
+const SCREEN_REFRESH_MS = 10000;
+let screenTimer = null, screenBusy = false;
+
+function screenTile(s) {
+  const name = `<strong>${esc(s.device)}</strong>`;
+  if (!s.ok) return `<div class="screen"><div class="shot">Can't reach this Shield</div>
+    <div class="cap"><div class="grow">${name}<div class="err" style="font-size:13px">${esc(s.error)}</div></div></div></div>`;
+  let shot;
+  if (s.image) shot = `<img src="api/screens/${encodeURIComponent(s.device)}?t=${s.captured_at}" alt="Screen of ${esc(s.device)}">`;
+  else if (!s.awake) shot = "Asleep";
+  else shot = esc(s.image_error || "No screenshot");
+  const app = s.package ? {package: s.package, label: s.label, icon: s.icon} : null;
+  const what = !s.awake ? "Asleep" : app ? esc(app.label || app.package) : "Unknown";
+  const when = new Date(s.captured_at * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit", second: "2-digit"});
+  return `<div class="screen"><div class="shot">${shot}</div>
+    <div class="cap">${app && s.awake ? tile(app) : ""}<div class="grow">${name}
+      <div style="font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${what}</div></div>
+      <small class="muted">${when}</small></div></div>`;
+}
+
+async function loadScreens() {
+  clearTimeout(screenTimer);
+  if (screenBusy || $("#tab-screens").hidden || document.hidden) return;
+  screenBusy = true;
+  try {
+    const screens = await api("GET", "now-showing");
+    $("#screens").innerHTML = screens.length
+      ? `<div class="screens">${screens.map(screenTile).join("")}</div>`
+      : `<div class="empty">No Shields yet.</div>`;
+  } catch (e) {
+    $("#screens").innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
+  } finally { screenBusy = false; }
+  if (!$("#tab-screens").hidden && !document.hidden) screenTimer = setTimeout(loadScreens, SCREEN_REFRESH_MS);
+}
+document.addEventListener("visibilitychange", loadScreens);
+
 // ---- tabs -------------------------------------------------------------------------
 function showTab(name) {
   for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", b.dataset.tab === name);
   $("#tab-apps").hidden = name !== "apps";
   $("#tab-shields").hidden = name !== "shields";
+  $("#tab-screens").hidden = name !== "screens";
+  loadScreens();
   try { localStorage.setItem("tab", name); } catch {}
 }
 document.querySelector("nav").addEventListener("click", (ev) => {
