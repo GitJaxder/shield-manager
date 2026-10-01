@@ -8,7 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from shield_manager import __version__
-from shield_manager.apk import ApkError, read_apk_info
+from shield_manager.apk import ApkError
+from shield_manager.bundle import app_info
 from shield_manager.registry import (
     DEFAULT_ADB_PORT,
     Device,
@@ -292,7 +293,7 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
         return 1
 
     if args.action == "install":
-        info = read_apk_info(args.apk)
+        info = app_info(args.apk)
         print(f"{info.package} {info.version_name} (versionCode {info.version_code})")
 
         def action(conn):

@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shield_manager import bundle
 from shield_manager.apk import ApkError, read_apk_info
 
 # Open-source apps people put on Shields, by package name.
@@ -226,14 +227,19 @@ class Downloader:
                 path = dest / Path(asset["name"]).name
                 try:
                     self.http.save(asset["browser_download_url"], path, progress)
-                    info = read_apk_info(path)
+                    paths = (
+                        bundle.unpack(path, dest / f"{path.stem}-apks")
+                        if bundle.is_bundle(path)
+                        else [path]
+                    )
+                    info = read_apk_info(paths[0])
                 except (OSError, ApkError):
                     continue
                 if info.package != wanted.package:
                     continue
                 if wanted.newer:
                     if info.version_code >= wanted.version_code:
-                        return [path]
+                        return paths
                     raise SourceUnavailable("its newest release isn't newer than yours")
                 if info.version_code < wanted.version_code:
                     # Releases are newest first, so older ones won't have it either.
@@ -241,7 +247,7 @@ class Downloader:
                         f"no release of {repo} has version {wanted.version_code}"
                     )
                 if info.version_code == wanted.version_code:
-                    return [path]
+                    return paths
                 break  # a newer release; try the next one
         raise SourceUnavailable(f"no recent release of {repo} has version {wanted.version_code}")
 
@@ -350,7 +356,7 @@ def rank_assets(assets: list[dict], abis: list[str]) -> list[dict]:
     usable = [
         a
         for a in assets
-        if a.get("name", "").lower().endswith(".apk")
+        if a.get("name", "").lower().endswith((".apk", *bundle.SUFFIXES[:-1]))
         and (asset_abi(a["name"]) is None or asset_abi(a["name"]) in abis)
     ]
 
