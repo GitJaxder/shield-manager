@@ -127,7 +127,7 @@
   .step-head { display: flex; gap: 8px; font-size: 14px; }
   .step-head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .step-head .pct { font-variant-numeric: tabular-nums; opacity: .85; }
-  .step small { margin-top: 2px; }
+  .step small { margin-top: 2px; white-space: pre-line; }
   .fixes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; align-items: center; }
   .elsewhere { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
   .elsewhere select { font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
@@ -348,14 +348,11 @@ function stageText(st) {
   return st.stage;
 }
 
-// The fallbacks after a Shield copy and GitHub: an APKMirror page, then a Google search,
-// then the Play Store. The link says which one it is.
-function pageLabel(url) {
-  let host = "";
-  try { host = new URL(url).hostname; } catch (e) { /* not a URL */ }
-  if (/(^|\.)google\./.test(host)) return "Search Google for the file";
-  if (/(^|\.)apkmirror\.com$/.test(host)) return "Open on APKMirror";
-  return "Open download page";
+// The fallbacks after a Shield copy and GitHub: an APKMirror page (or Uptodown, APKPure,
+// APKCombo), then a web search, then the Play Store. site is the server's name for the page's
+// site, or null for a search.
+function pageLabel(site) {
+  return site ? `Open on ${site}` : "Search the web";
 }
 
 function stepRow(st) {
@@ -371,7 +368,7 @@ function stepRow(st) {
     <div class="pbar ${bar}"><i style="width:${width}%${bar === "ind" ? `;animation-delay:-${(Date.now() % 1200) / 1000}s` : ""}"></i></div>
     <small>${esc(stageText(st))}</small>
     ${st.stage === "failed" && st.store ? `<div class="fixes">
-      ${/^https:\/\//.test(st.download_page || "") ? `<a class="store" href="${esc(st.download_page)}" target="_blank" rel="noopener noreferrer">${pageLabel(st.download_page)}</a>` : ""}
+      ${/^https:\/\//.test(st.download_page || "") ? `<a class="store" href="${esc(st.download_page)}" target="_blank" rel="noopener noreferrer">${pageLabel(st.download_site)}</a>` : ""}
       <button class="store${st.download_page ? " alt" : ""}" data-store="${esc(st.package)}" data-device="${esc(st.device)}">Open in Play Store on ${esc(st.device)}</button>
     </div>${st.download_page ? `<small>Download the file for ${esc(st.device)} and upload it on the Shields tab, or use the Play Store as a last resort.</small>` : ""}` : ""}</div>`;
 }
@@ -760,7 +757,7 @@ async function findDownloadPage(btn, pkg) {
   try {
     const r = await api("GET", `download-page?${new URLSearchParams({package: pkg, device})}`);
     if (!/^https:\/\//.test(r.url)) throw new Error("no download page found");
-    out.innerHTML = `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${pageLabel(r.url)}${r.version ? ` (version ${esc(r.version)})` : ""}</a>, then upload the file on the Shields tab.`;
+    out.innerHTML = `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${pageLabel(r.site)}${r.version ? ` (version ${esc(r.version)})` : ""}</a>, then upload the file on the Shields tab.`;
   } catch (e) { out.textContent = e.message; }
   btn.disabled = false;
 }
