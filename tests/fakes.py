@@ -190,8 +190,9 @@ def real_apk(path, package, version_code, version_name="1.0", abis=(), cert=None
 class FakeHttp:
     """Stands in for sources.Http: serves bytes by URL and records requests."""
 
-    def __init__(self, pages=None):
+    def __init__(self, pages=None, redirects=None):
         self.pages = dict(pages or {})  # url -> bytes (or a Path to serve)
+        self.redirects = dict(redirects or {})  # url -> where it redirects to
         self.requests = []  # (url, headers)
 
     def _body(self, url):
@@ -211,21 +212,8 @@ class FakeHttp:
         if progress:
             progress(len(data), len(data))
 
-
-def apkpure_body(*entries):
-    """Shaped like APKPure's binary app_version response: for each (version name, b"APKJ"
-    or b"XAPKJ", url), the name, a hash, then the download link."""
-    body = b"\x0a\x12"
-    for version, kind, url in entries:
-        body += (
-            b"\x1a\x05"
-            + version.encode()
-            + b":("
-            + b"a" * 40
-            + b"\x08junk\x10"
-            + kind
-            + b"\x12\x40"
-            + url.encode()
-            + b"\x00\x01"
-        )
-    return body
+    def final_url(self, url):
+        self.requests.append((url, {}))
+        if url not in self.redirects:
+            raise OSError(f"404 {url}")
+        return self.redirects[url]

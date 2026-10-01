@@ -210,12 +210,16 @@ def test_sync_downloads_a_build_the_target_can_run(tmp_path):
 
 
 def test_sync_refuses_a_download_signed_by_someone_else(tmp_path):
+    from shield_manager import sources
+
     pkg, shields, downloads = _download_fleet(tmp_path, github_cert=b"impostor")
     [attic] = fleet.sync(REF, [ATTIC], lambda d: shields[d.name], downloads=downloads)
     error = attic.failed[pkg]
     assert "GitHub: its copy is signed by a different developer" in error
-    assert "APKPure: " in error
     assert f"shield-manager app store-page {pkg}" in error
+    page = attic.download_pages[pkg]  # Morphe isn't reachable here, so a web search
+    assert page == sources.web_search_url(pkg, "1.0", "armeabi-v7a")
+    assert f"download a copy for attic from {page}" in error
     assert pkg not in shields[ATTIC.name].installed
 
 
@@ -227,18 +231,19 @@ def test_source_order_puts_downloads_between_likely_and_unlikely_shields():
     assert fleet.source_order(["ref", "attic"], ARM32, abis, "pkg", d) == [
         "attic",
         "GitHub",
-        "APKPure",
         "ref",
     ]
-    assert fleet.source_order(["ref"], ARM32, abis, "other", d) == ["APKPure", "ref"]
+    assert fleet.source_order(["ref"], ARM32, abis, "other", d) == ["ref"]
     assert fleet.source_order(["ref"], ARM32, abis, "pkg", None) == ["ref"]
 
 
 def _update_fleet(tmp_path, cert=b"dev"):
-    """den (64-bit) and attic (32-bit) both have Kodi 1.0 (100) signed by "dev"; APKPure
-    lists 1.0 and 1.1, and its 1.1 download (110) is signed by cert."""
+    """den (64-bit) and attic (32-bit) both have Kodi 1.0 (100) signed by "dev"; its GitHub
+    repository's newest release is 1.1, whose universal APK (110) is signed by cert."""
+    import json
+
     from shield_manager import sources
-    from tests.fakes import FakeHttp, apkpure_body, real_apk
+    from tests.fakes import FakeHttp, real_apk
 
     pkg = "org.xbmc.kodi"
     den_copy = real_apk(tmp_path / "den.apk", pkg, 100, "1.0", ["arm64-v8a"], b"dev")
@@ -252,16 +257,20 @@ def _update_fleet(tmp_path, cert=b"dev"):
         ),
     }
     new = real_apk(tmp_path / "new.apk", pkg, 110, "1.1", ["arm64-v8a", "armeabi-v7a"], cert)
-    url = "https://download.pureapk.com/b/APK/kodi?v=1.1"
+    url = "https://github.com/dl/kodi-1.1.apk"
+    release = {
+        "tag_name": "v1.1",
+        "assets": [{"name": "kodi-1.1.apk", "browser_download_url": url}],
+    }
     http = FakeHttp(
         {
-            sources.APKPURE_VERSIONS_URL + pkg: apkpure_body(
-                ("1.1", b"APKJ", url), ("1.0", b"APKJ", "https://download.pureapk.com/old?1")
-            ),
+            "https://api.github.com/repos/xbmc/xbmc/releases?per_page=10": json.dumps(
+                [release]
+            ).encode(),
             url: new,
         }
     )
-    return pkg, shields, sources.Downloader(http)
+    return pkg, shields, sources.Downloader(http, {pkg: "xbmc/xbmc"})
 
 
 def test_check_updates_finds_a_newer_version(tmp_path):
@@ -277,7 +286,7 @@ def test_check_updates_finds_a_newer_version(tmp_path):
     )
     assert errors == {"gone": "unreachable"}
     [u] = updates
-    assert (u.package, u.installed_name, u.latest_name, u.source) == (pkg, "1.0", "1.1", "APKPure")
+    assert (u.package, u.installed_name, u.latest_name, u.source) == (pkg, "1.0", "1.1", "GitHub")
     assert u.shields == ["den", "attic"]
 
 
@@ -288,8 +297,8 @@ def test_apply_updates_installs_on_every_shield(tmp_path):
     [u] = fleet.apply_updates(updates, [DEN, ATTIC], lambda d: connect(d.name), downloads)
     assert u.failed == {}
     assert u.applied == {
-        "den": "updated to 1.1 (from APKPure)",
-        "attic": "updated to 1.1 (from APKPure)",
+        "den": "updated to 1.1 (from GitHub)",
+        "attic": "updated to 1.1 (from GitHub)",
     }
     assert shields[DEN.name].installed[pkg][0] == shields[ATTIC.name].installed[pkg][0] == 110
 

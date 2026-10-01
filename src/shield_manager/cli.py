@@ -83,6 +83,18 @@ def build_parser() -> argparse.ArgumentParser:
     store.add_argument("package")
     _add_target_args(store)
 
+    page = app_sub.add_parser(
+        "download-page",
+        help="print a link to the download page for the build of an app each Shield can run",
+    )
+    page.add_argument("package")
+    page.add_argument(
+        "--version",
+        metavar="NAME",
+        help="the version name to look for (default: the one installed, else the newest)",
+    )
+    _add_target_args(page)
+
     app_list = app_sub.add_parser("list", help="list installed apps")
     app_list.add_argument("--system", action="store_true", help="include system packages")
     _add_target_args(app_list)
@@ -119,14 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_sync.add_argument(
         "--no-download",
         action="store_true",
-        help="only copy between Shields; never download apps from GitHub or APKPure",
+        help="only copy between Shields; never download apps from GitHub",
     )
     _add_target_args(fleet_sync)
 
     updates = fleet_sub.add_parser(
         "updates",
-        help="check GitHub and APKPure for newer versions of installed apps "
-        "(targets default to all)",
+        help="check GitHub for newer versions of open-source apps (targets default to all)",
     )
     updates.add_argument(
         "--install", action="store_true", help="install the updates found on every Shield"
@@ -293,6 +304,24 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
         def action(conn):
             deploy.open_store_page(conn, args.package)
             return "Play Store page open on the TV; press Install with the remote"
+
+    elif args.action == "download-page":
+        from shield_manager.sources import Downloader
+
+        downloads = Downloader.from_config(registry.path.parent)
+
+        def action(conn):
+            version = args.version
+            if not version:
+                installed = deploy.installed_version(conn, args.package)
+                version = installed.version_name if installed else None
+            abi = (deploy.device_abis(conn) or ["armeabi-v7a"])[0]
+            page = downloads.download_page(args.package, version, abi)
+            return (
+                f"{version or 'newest'} for {abi}: {page}\n"
+                "  Download the APK there, then install it with "
+                "`shield-manager app install FILE -d <shield>`"
+            )
 
     else:  # list
 

@@ -123,8 +123,8 @@ out of date somewhere. Tap an app to install or update it on a Shield; it's copi
 Shield that already has the newest version. Tick the checkbox on several apps to **Sync** them
 (install or update them on every Shield that's missing or behind) or **Remove** them from the
 Shields you pick, all at once. A banner offers **Sync now** when Shields have
-fallen behind the reference. Sync never removes apps. The page also checks GitHub and
-APKPure for newer versions when it opens (at most every 6 hours, or when you press **Check
+fallen behind the reference. Sync never removes apps. The page also checks GitHub for
+newer versions of open-source apps when it opens (at most every 6 hours, or when you press **Check
 again**); apps with one show "Update available: 1.0 → 1.1" and appear under **Updates**.
 Press **Update all** in the banner, or tick apps and press **Update**, to install them as
 `fleet updates --install` does (see [Checking for updates](#checking-for-updates)). The **Shields** tab adds, groups and
@@ -170,15 +170,38 @@ sources in order, and uses the first copy that Shield can run:
 
 1. Another Shield of the same model that already has the app.
 2. GitHub releases, for open-source apps it knows (SmartTube, the Home Assistant app).
-3. APKPure.
-4. Your other Shields.
+3. Your other Shields.
 
-A download is only installed when it's signed by the same developer as the copy already on
-your Shields, so a tampered download is refused. Add `--no-download` to only copy between
-Shields.
+A GitHub download is only installed when it's signed by the same developer as the copy
+already on your Shields, so a tampered download is refused. Add `--no-download` to only copy
+between Shields.
 
-If none of them has a copy the Shield can run, open the app's Play Store page on that Shield
-and press **Install** with the remote:
+If none of them has a copy the Shield can run, the error includes a link to the download
+page for the right version and CPU type. It finds the page the way
+[Morphe](https://github.com/MorpheApp/morphe-manager) does: Morphe's server points to that
+build on APKMirror (or Uptodown, APKPure or APKCombo), and if it can't, the link is a web
+search on those sites instead. You can also get the link yourself:
+
+```sh
+shield-manager app download-page com.valvesoftware.steamlink -d bedroom
+```
+
+Then:
+
+1. Open the link on your computer.
+2. Download the APK file. On APKMirror, scroll to the download section and press
+   **DOWNLOAD APK**.
+3. Install it on the Shield:
+
+   ```sh
+   shield-manager app install ~/Downloads/the-file.apk -d bedroom
+   ```
+
+   Or upload it on the web UI's **Shields** tab.
+
+Files you download yourself aren't checked against your Shields' copy, so stick to the page
+the link opens. Another way is to open the app's Play Store page on that Shield and press
+**Install** with the remote:
 
 ```sh
 shield-manager app store-page com.valvesoftware.steamlink -d bedroom
@@ -187,15 +210,14 @@ shield-manager app store-page com.valvesoftware.steamlink -d bedroom
 ### Checking for updates
 
 ```sh
-shield-manager fleet updates             # list apps with a newer version online
+shield-manager fleet updates             # list open-source apps with a newer version on GitHub
 shield-manager fleet updates --install   # install those updates on every Shield
 ```
 
-This compares each installed app with the newest version on GitHub (for the open-source
-apps it knows) and APKPure. Updates are installed on every Shield that has the app, with
-the build for its CPU type, and only when the download is signed by the same developer
-as the installed copy. APKPure gets its copies separately from the Play Store, so it
-can lag behind an update the Play Store already offers.
+This compares each installed open-source app it knows with the newest release on GitHub.
+Other apps can't be checked yet. Updates
+are installed on every Shield that has the app, with the build for its CPU type, and only
+when the download is signed by the same developer as the installed copy.
 
 To teach it more open-source apps, create a file called `app-sources.json` next to
 `devices.json` in `~/.config/shield-manager/`, listing each app's package name and GitHub

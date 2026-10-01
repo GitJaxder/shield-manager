@@ -206,25 +206,51 @@ def test_app_store_page_opens_the_play_store(registry, fleet, capsys):
 
 
 def test_fleet_updates_lists_and_installs(registry, fleet, monkeypatch, tmp_path, capsys):
+    import json
+
     from shield_manager import sources
-    from tests.fakes import FakeHttp, apkpure_body, real_apk
+    from tests.fakes import FakeHttp, real_apk
 
     pkg = "org.xbmc.kodi"
     copy = real_apk(tmp_path / "den.apk", pkg, 100, "1.0", cert=b"dev")
     fleet["den"].installed[pkg] = (100, "1.0")
     fleet["den"].apk_files[pkg] = copy
     new = real_apk(tmp_path / "new.apk", pkg, 110, "1.1", cert=b"dev")
-    url = "https://download.pureapk.com/b/APK/kodi?v=1.1"
+    url = "https://github.com/dl/kodi.apk"
+    releases = [{"tag_name": "1.1", "assets": [{"name": "kodi.apk", "browser_download_url": url}]}]
     http = FakeHttp(
-        {sources.APKPURE_VERSIONS_URL + pkg: apkpure_body(("1.1", b"APKJ", url)), url: new}
+        {
+            "https://api.github.com/repos/xbmc/xbmc/releases?per_page=10": json.dumps(
+                releases
+            ).encode(),
+            url: new,
+        }
     )
-    monkeypatch.setattr(sources.Downloader, "from_config", classmethod(lambda cls, d: cls(http)))
+    monkeypatch.setattr(
+        sources.Downloader, "from_config", classmethod(lambda cls, d: cls(http, {pkg: "xbmc/xbmc"}))
+    )
 
     assert main(["fleet", "updates"], registry=registry) == 0
     out = capsys.readouterr().out
-    assert f"{pkg}: 1.0 -> 1.1 (APKPure) on den" in out
+    assert f"{pkg}: 1.0 -> 1.1 (GitHub) on den" in out
     assert "fleet updates --install" in out
 
     assert main(["fleet", "updates", "--install"], registry=registry) == 0
-    assert f"den: {pkg} updated to 1.1 (from APKPure)" in capsys.readouterr().out
+    assert f"den: {pkg} updated to 1.1 (from GitHub)" in capsys.readouterr().out
     assert fleet["den"].installed[pkg][0] == 110
+
+
+def test_app_download_page_links_the_build_each_shield_runs(registry, fleet, monkeypatch, capsys):
+    from shield_manager import sources
+    from tests.fakes import FakeHttp
+
+    pkg = "org.xbmc.kodi"
+    fleet["den"].installed[pkg] = (100, "21.1")
+    fleet["den"].abis = ["armeabi-v7a", "armeabi"]
+    page = "https://www.apkmirror.com/apk/xbmc/kodi/kodi-21-1-release/"
+    http = FakeHttp(redirects={sources.morphe_url(pkg, "21.1", "armeabi-v7a"): page})
+    monkeypatch.setattr(sources.Downloader, "from_config", classmethod(lambda cls, d: cls(http)))
+    assert main(["app", "download-page", pkg, "-d", "den"], registry=registry) == 0
+    out = capsys.readouterr().out
+    assert f"den: 21.1 for armeabi-v7a: {page}" in out
+    assert "shield-manager app install FILE" in out
