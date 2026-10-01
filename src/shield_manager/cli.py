@@ -164,6 +164,45 @@ def build_parser() -> argparse.ArgumentParser:
     source_remove = source_sub.add_parser("remove", help="stop downloading an app from GitHub")
     source_remove.add_argument("package")
 
+    settings = sub.add_parser(
+        "settings", help="keep every Shield's Android settings matching the reference Shield"
+    )
+    settings_sub = settings.add_subparsers(dest="action", required=True)
+    settings_sub.add_parser("list", help="list the settings that can be synced, by category")
+    settings_status = settings_sub.add_parser(
+        "status",
+        help="show how each Shield's settings differ from the reference (targets default to all)",
+    )
+    settings_sync = settings_sub.add_parser(
+        "sync", help="copy settings from the reference (targets default to all)"
+    )
+    for p in (settings_status, settings_sync):
+        p.add_argument("--from", dest="source", metavar="NAME", help="override the reference")
+        p.add_argument(
+            "-c",
+            "--category",
+            action="append",
+            default=[],
+            metavar="CATEGORY",
+            help="only these categories (repeatable; see `settings list`)",
+        )
+        p.add_argument(
+            "--key",
+            action="append",
+            default=[],
+            metavar="TABLE/NAME",
+            help="also this setting, e.g. global/some_setting (repeatable)",
+        )
+        _add_target_args(p)
+    settings_status.add_argument(
+        "--others",
+        action="store_true",
+        help="also list every other setting that differs (to find ones worth syncing)",
+    )
+    settings_sync.add_argument(
+        "--dry-run", action="store_true", help="show what would change without changing it"
+    )
+
     web = sub.add_parser("web", help="serve the web UI")
     web.add_argument("--host", default="127.0.0.1", help="address to bind (default: localhost)")
     web.add_argument("--port", type=int, default=8765)
@@ -518,6 +557,89 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
     return 1 if problems else 0
 
 
+def _run_settings(args: argparse.Namespace, registry: Registry) -> int:
+    from shield_manager import adb, settings
+
+    if args.action == "list":
+        for category in settings.CATEGORIES:
+            note = "" if category.default else " (only with -c)"
+            print(f"{category.name}: {category.description}{note}")
+            for s in settings.CATALOG:
+                if s.category == category.name:
+                    print(f"  {s.label} ({s.table}/{s.name})")
+        return 0
+
+    source = args.source or registry.reference
+    if not source:
+        print(
+            "error: no reference Shield; choose one with: shield-manager fleet set-reference NAME",
+            file=sys.stderr,
+        )
+        return 2
+    reference = registry.get(source)
+    picked = args.device or args.group or args.all
+    targets = registry.resolve(args.device, args.group, args.all) if picked else registry.list()
+    try:
+        keys = [settings.parse_key(k) for k in args.key]
+        settings.selected(args.category, keys)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    dry_run = args.action == "status" or args.dry_run
+    print(f"Reading settings from reference {reference.name}")
+    try:
+        reports = settings.sync(
+            reference,
+            targets,
+            adb.connect,
+            args.category,
+            keys,
+            dry_run=dry_run,
+            others=getattr(args, "others", False),
+            progress=lambda step: print(f"  {step.describe()}", file=sys.stderr),
+        )
+    except Exception as e:  # target failures are caught per device; this is the reference
+        print(f"error: can't read settings from reference {reference.name}: {e}", file=sys.stderr)
+        return 1
+
+    if not reports:
+        print("No other Shields to compare. Add one with: shield-manager device add NAME HOST")
+    problems = 0
+    for report in reports:
+        name = report.device.name
+        if report.error:
+            problems += 1
+            print(f"{name}: FAILED: {report.error}", file=sys.stderr)
+            continue
+        if dry_run:
+            if report.in_sync:
+                print(f"{name}: settings in sync")
+            else:
+                problems += 1
+                print(f"{name}: {len(report.diffs)} settings differ")
+                for d in report.diffs:
+                    print(f"  {d.describe()}")
+        else:
+            synced = "already in sync" if not report.diffs else "synced"
+            print(f"{name}: settings {synced}")
+            for label, value in report.applied.items():
+                print(f"  {label}: set to {value}")
+            for label, error in report.failed.items():
+                problems += 1
+                print(f"  {label}: FAILED: {error}", file=sys.stderr)
+            for d in report.diffs:
+                if not d.syncable:
+                    print(f"  {d.describe()}")
+        if report.others:
+            print(f"  {len(report.others)} other settings differ (not synced):")
+            for d in report.others:
+                print(f"    {d.describe()}")
+    if dry_run and problems and args.action == "status":
+        print("Copy them with: shield-manager settings sync")
+    return 1 if problems else 0
+
+
 def main(argv: Sequence[str] | None = None, registry: Registry | None = None) -> int:
     args = build_parser().parse_args(argv)
     registry = registry or Registry()
@@ -550,6 +672,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_fleet(args, registry)
         elif args.command == "source":
             return _run_source(args, registry)
+        elif args.command == "settings":
+            return _run_settings(args, registry)
         elif args.command == "web":
             return _serve_web(args, registry)
     except DeviceExistsError as e:
