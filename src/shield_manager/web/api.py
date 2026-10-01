@@ -81,6 +81,16 @@ def _step_reporter(steps: list[Step]) -> Callable[[Any], None]:
     return report
 
 
+def _download_page(fetcher: fleet.Fetcher, target_abis: list[str]) -> str | None:
+    """A link to a page offering a build that fits target_abis, or None. Only https links
+    are passed on, since the page shows them as a button."""
+    try:
+        url = fetcher.download_page(target_abis)
+    except Exception:
+        return None
+    return url if url and url.startswith("https://") else None
+
+
 def _call_with_progress(fn: Callable, steps: list[Step], *args, **kwargs):
     """Call a deploy function, passing progress= when it accepts one.
 
@@ -399,6 +409,11 @@ class Api:
                         else:
                             step.update(FAILED, error=result["error"])
                             step.store = result.get("incompatible", False)
+                            if step.store:
+                                job.progress = f"Finding a download page for {label}"
+                                step.download_page = _download_page(
+                                    fetcher, abis.get(device.name, [])
+                                )
                         job.results.append({"package": package, **result})
             except Exception as e:
                 for step in mine:

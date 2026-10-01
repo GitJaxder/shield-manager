@@ -35,6 +35,7 @@ class Step:
     percent: float | None = None  # None while the stage has no measurable progress
     error: str | None = None
     store: bool = False  # failed because no copy fits; the Play Store page can install it
+    download_page: str | None = None  # where to download a build that fits, by hand
 
     def update(self, stage: str, percent: float | None = None, error: str | None = None) -> None:
         self.stage, self.percent, self.error = stage, percent, error
@@ -49,6 +50,7 @@ class Step:
             "percent": None if self.percent is None else round(self.percent, 1),
             "error": self.error,
             "store": self.store,
+            "download_page": self.download_page,
         }
 
 
