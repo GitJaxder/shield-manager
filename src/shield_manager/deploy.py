@@ -10,6 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from shield_manager.apk import native_abis
+
 REMOTE_TMP_DIR = "/data/local/tmp"
 # Installing a large APK on a Shield can take well over the default shell timeout.
 INSTALL_TIMEOUT_S = 300.0
@@ -30,6 +32,10 @@ class Connection(Protocol):
 
 class DeployError(Exception):
     pass
+
+
+class IncompatibleAppError(DeployError):
+    """The app's native code is built for a CPU type the Shield doesn't run."""
 
 
 class Phase(str, Enum):
@@ -130,6 +136,28 @@ def installed_version(conn: Connection, package: str) -> InstalledVersion | None
     return InstalledVersion(int(code.group(1)), name.group(1).strip() if name else "")
 
 
+def device_abis(conn: Connection) -> list[str]:
+    """CPU ABIs the device runs, preferred first (e.g. ["arm64-v8a", "armeabi-v7a"])."""
+    out = str(conn.shell("getprop ro.product.cpu.abilist")).strip()
+    return [abi.strip() for abi in out.split(",") if abi.strip()]
+
+
+def _check_abis(conn: Connection, paths: list[Path]) -> None:
+    needed = native_abis(paths)
+    supported = device_abis(conn) if needed else []
+    if supported and not needed & set(supported):
+        raise IncompatibleAppError(_abi_message(needed, supported))
+
+
+def _abi_message(needed: set[str] | None, supported: list[str]) -> str:
+    built = f"built for {', '.join(sorted(needed))}" if needed else "built for another CPU type"
+    runs = f" only runs {', '.join(supported)}" if supported else " can't run it"
+    return (
+        f"this copy of the app is {built}, but this Shield{runs}. Install it on this "
+        "Shield from the Play Store, or copy it from a Shield of the same model."
+    )
+
+
 def install(
     conn: Connection,
     apk_paths: str | Path | Sequence[str | Path],
@@ -153,6 +181,7 @@ def install(
     remotes = [f"{REMOTE_TMP_DIR}/{package}.{i}.apk" for i in range(len(paths))]
     flags = "-r -d" if allow_downgrade else "-r"
     long_op = {**_LONG, "timeout_s": INSTALL_TIMEOUT_S}
+    _check_abis(conn, paths)
     try:
         copy = _Transfer(package, Phase.COPYING, _local_size(paths), progress)
         for local, remote in zip(paths, remotes, strict=True):
@@ -164,6 +193,8 @@ def install(
             out = _install_session(conn, paths, remotes, flags, long_op)
     finally:
         conn.shell("rm -f " + " ".join(shlex.quote(r) for r in remotes))
+    if "INSTALL_FAILED_NO_MATCHING_ABIS" in out:
+        raise IncompatibleAppError(f"{_abi_message(native_abis(paths), device_abis(conn))} ({out})")
     if "Success" not in out:
         raise DeployError(out or "pm install gave no output")
 

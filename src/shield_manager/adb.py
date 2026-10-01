@@ -64,6 +64,7 @@ def get_props(conn: AdbDeviceTcp) -> dict[str, str]:
         "model": "ro.product.model",
         "android": "ro.build.version.release",
         "build": "ro.build.display.id",
+        "cpu": "ro.product.cpu.abilist",
         "serial": "ro.serialno",
     }
     return {label: str(conn.shell(f"getprop {prop}")).strip() for label, prop in keys.items()}

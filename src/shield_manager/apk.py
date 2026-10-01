@@ -49,6 +49,24 @@ def read_apk_info(path: str | Path) -> ApkInfo:
     return parse_manifest(manifest)
 
 
+def native_abis(paths: list[Path]) -> set[str]:
+    """CPU ABIs an app ships native code for (e.g. {"arm64-v8a"}), across its base and
+    split APKs. Empty means the app has no native code (or the files can't be read), so
+    nothing rules it out."""
+    abis = set()
+    for path in paths:
+        try:
+            with zipfile.ZipFile(path) as zf:
+                names = zf.namelist()
+        except (OSError, zipfile.BadZipFile):
+            continue  # pm install will report a broken APK better than we can
+        for name in names:
+            parts = name.split("/")
+            if len(parts) == 3 and parts[0] == "lib" and parts[2].endswith(".so"):
+                abis.add(parts[1])
+    return abis
+
+
 def parse_manifest(data: bytes) -> ApkInfo:
     try:
         attrs = _manifest_attributes(data)
