@@ -3,6 +3,24 @@
 Each version is released as a GitHub release tagged `v<version>`. Home Assistant's app
 store offers the app's new version once it's released.
 
+## 0.2.2
+
+### Security
+
+- The Home Assistant app no longer has read access to Home Assistant's configuration
+  folder. It only used it to copy the Android TV integration's ADB key, but the same folder
+  holds every integration's passwords and tokens. To reuse that key, paste it into the
+  app's new **ADB key** option (see the app's Documentation tab). If the app already
+  copied it, nothing changes.
+- The ADB private key is now readable by its owner only. A key made by an earlier version
+  could be read by other accounts on the same computer; it's fixed the next time
+  shield-manager uses it.
+
+### Added
+
+- `shield-manager key import` reads an ADB private key from standard input and uses it
+  instead of the current one.
+
 ## 0.2.1
 
 ### Security
