@@ -137,7 +137,8 @@ or download from GitHub. An app's page has **Get it another way**: open its Play
 on a Shield's TV (`app store-page`) or find a download page for that Shield's CPU type
 (`app download-page`). Its **GitHub source** section sets, edits or removes the repository
 the app's releases come from (owner/name or the repo's URL, plus an optional file-name
-pattern), like `source set` and `source remove`. The update check re-runs right after.
+pattern), like `source set` and `source remove`. The update check re-runs right after. Cards
+name the repo, and the **From GitHub** filter lists every app with a source (`source list`).
 
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
 at the bottom shows each app on each Shield moving through Downloading, Copying and Installing,
