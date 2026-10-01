@@ -210,3 +210,22 @@ class FakeHttp:
         Path(dest).write_bytes(data)
         if progress:
             progress(len(data), len(data))
+
+
+def apkpure_body(*entries):
+    """Shaped like APKPure's binary app_version response: for each (version name, b"APKJ"
+    or b"XAPKJ", url), the name, a hash, then the download link."""
+    body = b"\x0a\x12"
+    for version, kind, url in entries:
+        body += (
+            b"\x1a\x05"
+            + version.encode()
+            + b":("
+            + b"a" * 40
+            + b"\x08junk\x10"
+            + kind
+            + b"\x12\x40"
+            + url.encode()
+            + b"\x00\x01"
+        )
+    return body

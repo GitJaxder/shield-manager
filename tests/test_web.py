@@ -510,3 +510,51 @@ def test_store_page_opens_the_play_store_on_that_shield(ui, monkeypatch):
     status, body = ui("POST", "/api/store-page", {"package": "org.xbmc.kodi", "device": "den"})
     assert status == 502 and "Activity not started" in body["error"]
     assert ui("POST", "/api/store-page", {"package": "org.xbmc.kodi", "device": "x"})[0] == 404
+
+
+def test_online_updates_are_checked_then_installed(ui, monkeypatch):
+    from shield_manager import fleet
+    from shield_manager.deploy import Phase, Progress
+
+    assert ui("GET", "/api/online-updates")[1]["enabled"] is False
+    assert ui("POST", "/api/online-updates/check")[0] == 409
+    ui.api.downloads = object()  # stands in for a Downloader; fleet is faked below
+
+    def check_updates(devices, connect, downloads):
+        update = fleet.Update("org.xbmc.kodi", "20.0", 20, "21.0", "GitHub", ["den", "living"])
+        return [update], {}
+
+    applied = []
+
+    def apply_updates(updates, devices, connect, downloads, progress=None):
+        [u] = updates
+        progress(Progress(u.package, Phase.DOWNLOADING, 50, 100, device="den"))
+        applied.append(ui.api.jobs.list()[0].steps[0].to_dict())
+        u.applied["den"] = "updated to 21.0 (from GitHub)"
+        u.failed["living"] = "signed by someone else"
+        return updates
+
+    monkeypatch.setattr(fleet, "check_updates", check_updates)
+    monkeypatch.setattr(fleet, "apply_updates", apply_updates)
+    job = ui.wait_job(ui("POST", "/api/online-updates/check")[1])
+    assert job["state"] == "done"
+    online = ui("GET", "/api/online-updates")[1]
+    assert online["checked"] and not online["checking"]
+    assert online["updates"] == {
+        "org.xbmc.kodi": {
+            "installed": "20.0",
+            "latest": "21.0",
+            "source": "GitHub",
+            "shields": ["den", "living"],
+        }
+    }
+
+    assert ui("POST", "/api/online-updates/install", {"packages": ["com.retroarch"]})[0] == 400
+    body = {"packages": ["org.xbmc.kodi"]}
+    job = ui.wait_job(ui("POST", "/api/online-updates/install", body)[1])
+    assert applied[0]["stage"] == "downloading" and applied[0]["percent"] == 50
+    assert applied[0]["source"] == "GitHub"
+    steps = {s["device"]: (s["stage"], s["error"]) for s in job["steps"]}
+    assert steps == {"den": ("done", None), "living": ("failed", "signed by someone else")}
+    # Still offered, since living didn't get it.
+    assert "org.xbmc.kodi" in ui("GET", "/api/online-updates")[1]["updates"]

@@ -115,6 +115,12 @@ class Handler(BaseHTTPRequestHandler):
                 return api.install_upload(self._receive_apk(), names, allow_downgrade)
             case "POST", ["sync"]:
                 return api.sync(self._json_body())
+            case "GET", ["online-updates"]:
+                return api.online_updates()
+            case "POST", ["online-updates", "check"]:
+                return api.check_online_updates()
+            case "POST", ["online-updates", "install"]:
+                return api.install_online_updates(self._json_body())
             case "POST", ["store-page"]:
                 return api.open_store_page(self._json_body())
             case "POST", ["uninstall"]:

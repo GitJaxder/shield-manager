@@ -123,7 +123,11 @@ out of date somewhere. Tap an app to install or update it on a Shield; it's copi
 Shield that already has the newest version. Tick the checkbox on several apps to **Sync** them
 (install or update them on every Shield that's missing or behind) or **Remove** them from the
 Shields you pick, all at once. A banner offers **Sync now** when Shields have
-fallen behind the reference. Sync never removes apps. The **Shields** tab adds, groups and
+fallen behind the reference. Sync never removes apps. The page also checks GitHub and
+APKPure for newer versions when it opens (at most every 6 hours, or when you press **Check
+again**); apps with one show "Update available: 1.0 → 1.1" and appear under **Updates**.
+Press **Update all** in the banner, or tick apps and press **Update**, to install them as
+`fleet updates --install` does (see [Checking for updates](#checking-for-updates)). The **Shields** tab adds, groups and
 removes Shields, picks the reference, and installs an APK file you upload.
 
 Installs run in the background, so closing the page doesn't stop them. While they run, a panel
@@ -179,6 +183,19 @@ and press **Install** with the remote:
 ```sh
 shield-manager app store-page com.valvesoftware.steamlink -d bedroom
 ```
+
+### Checking for updates
+
+```sh
+shield-manager fleet updates             # list apps with a newer version online
+shield-manager fleet updates --install   # install those updates on every Shield
+```
+
+This compares each installed app with the newest version on GitHub (for the open-source
+apps it knows) and APKPure. Updates are installed on every Shield that has the app, with
+the build for its CPU type, and only when the download is signed by the same developer
+as the installed copy. APKPure gets its copies separately from the Play Store, so it
+can lag behind an update the Play Store already offers.
 
 To teach it more open-source apps, create a file called `app-sources.json` next to
 `devices.json` in `~/.config/shield-manager/`, listing each app's package name and GitHub

@@ -203,3 +203,28 @@ def test_app_store_page_opens_the_play_store(registry, fleet, capsys):
     assert main(["app", "store-page", "org.xbmc.kodi", "-d", "den"], registry=registry) == 0
     assert any("market://details?id=org.xbmc.kodi" in c for c in fleet["den"].commands)
     assert "press Install" in capsys.readouterr().out
+
+
+def test_fleet_updates_lists_and_installs(registry, fleet, monkeypatch, tmp_path, capsys):
+    from shield_manager import sources
+    from tests.fakes import FakeHttp, apkpure_body, real_apk
+
+    pkg = "org.xbmc.kodi"
+    copy = real_apk(tmp_path / "den.apk", pkg, 100, "1.0", cert=b"dev")
+    fleet["den"].installed[pkg] = (100, "1.0")
+    fleet["den"].apk_files[pkg] = copy
+    new = real_apk(tmp_path / "new.apk", pkg, 110, "1.1", cert=b"dev")
+    url = "https://download.pureapk.com/b/APK/kodi?v=1.1"
+    http = FakeHttp(
+        {sources.APKPURE_VERSIONS_URL + pkg: apkpure_body(("1.1", b"APKJ", url)), url: new}
+    )
+    monkeypatch.setattr(sources.Downloader, "from_config", classmethod(lambda cls, d: cls(http)))
+
+    assert main(["fleet", "updates"], registry=registry) == 0
+    out = capsys.readouterr().out
+    assert f"{pkg}: 1.0 -> 1.1 (APKPure) on den" in out
+    assert "fleet updates --install" in out
+
+    assert main(["fleet", "updates", "--install"], registry=registry) == 0
+    assert f"den: {pkg} updated to 1.1 (from APKPure)" in capsys.readouterr().out
+    assert fleet["den"].installed[pkg][0] == 110

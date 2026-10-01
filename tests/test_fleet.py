@@ -232,3 +232,81 @@ def test_source_order_puts_downloads_between_likely_and_unlikely_shields():
     ]
     assert fleet.source_order(["ref"], ARM32, abis, "other", d) == ["APKPure", "ref"]
     assert fleet.source_order(["ref"], ARM32, abis, "pkg", None) == ["ref"]
+
+
+def _update_fleet(tmp_path, cert=b"dev"):
+    """den (64-bit) and attic (32-bit) both have Kodi 1.0 (100) signed by "dev"; APKPure
+    lists 1.0 and 1.1, and its 1.1 download (110) is signed by cert."""
+    from shield_manager import sources
+    from tests.fakes import FakeHttp, apkpure_body, real_apk
+
+    pkg = "org.xbmc.kodi"
+    den_copy = real_apk(tmp_path / "den.apk", pkg, 100, "1.0", ["arm64-v8a"], b"dev")
+    attic_copy = real_apk(tmp_path / "attic.apk", pkg, 100, "1.0", ["armeabi-v7a"], b"dev")
+    shields = {
+        DEN.name: FakeConnection(
+            installed={pkg: (100, "1.0")}, abis=ARM64, apk_files={pkg: den_copy}
+        ),
+        ATTIC.name: FakeConnection(
+            installed={pkg: (100, "1.0")}, abis=ARM32, apk_files={pkg: attic_copy}
+        ),
+    }
+    new = real_apk(tmp_path / "new.apk", pkg, 110, "1.1", ["arm64-v8a", "armeabi-v7a"], cert)
+    url = "https://download.pureapk.com/b/APK/kodi?v=1.1"
+    http = FakeHttp(
+        {
+            sources.APKPURE_VERSIONS_URL + pkg: apkpure_body(
+                ("1.1", b"APKJ", url), ("1.0", b"APKJ", "https://download.pureapk.com/old?1")
+            ),
+            url: new,
+        }
+    )
+    return pkg, shields, sources.Downloader(http)
+
+
+def test_check_updates_finds_a_newer_version(tmp_path):
+    pkg, shields, downloads = _update_fleet(tmp_path)
+
+    def connect(device):
+        if device.name not in shields:
+            raise ConnectionRefusedError("unreachable")
+        return shields[device.name]
+
+    updates, errors = fleet.check_updates(
+        [DEN, ATTIC, Device("gone", "10.0.0.9")], connect, downloads
+    )
+    assert errors == {"gone": "unreachable"}
+    [u] = updates
+    assert (u.package, u.installed_name, u.latest_name, u.source) == (pkg, "1.0", "1.1", "APKPure")
+    assert u.shields == ["den", "attic"]
+
+
+def test_apply_updates_installs_on_every_shield(tmp_path):
+    pkg, shields, downloads = _update_fleet(tmp_path)
+    connect = shields.__getitem__
+    updates, _ = fleet.check_updates([DEN, ATTIC], lambda d: connect(d.name), downloads)
+    [u] = fleet.apply_updates(updates, [DEN, ATTIC], lambda d: connect(d.name), downloads)
+    assert u.failed == {}
+    assert u.applied == {
+        "den": "updated to 1.1 (from APKPure)",
+        "attic": "updated to 1.1 (from APKPure)",
+    }
+    assert shields[DEN.name].installed[pkg][0] == shields[ATTIC.name].installed[pkg][0] == 110
+
+
+def test_apply_updates_refuses_a_download_signed_by_someone_else(tmp_path):
+    pkg, shields, downloads = _update_fleet(tmp_path, cert=b"impostor")
+    connect = shields.__getitem__
+    updates, _ = fleet.check_updates([DEN, ATTIC], lambda d: connect(d.name), downloads)
+    [u] = fleet.apply_updates(updates, [DEN, ATTIC], lambda d: connect(d.name), downloads)
+    assert set(u.failed) == {"den", "attic"}
+    assert "signed by a different developer" in u.failed["den"]
+    assert shields[DEN.name].installed[pkg][0] == 100
+
+
+def test_check_updates_skips_apps_that_are_current(tmp_path):
+    pkg, shields, downloads = _update_fleet(tmp_path)
+    for conn in shields.values():
+        conn.installed[pkg] = (110, "1.1")
+    updates, _ = fleet.check_updates([DEN, ATTIC], lambda d: shields[d.name], downloads)
+    assert updates == []
