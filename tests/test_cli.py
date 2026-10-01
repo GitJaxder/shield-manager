@@ -172,7 +172,10 @@ def test_install_shows_progress_phases_when_not_a_terminal(registry, fleet, tmp_
     fleet["den"].installed["com.example.tv"] = (42, "1.4.2")
     assert main(["app", "install", str(apk), "-d", "den"], registry=registry) == 0
     err = capsys.readouterr().err.splitlines()
-    assert err == ["den: Copying com.example.tv - 0%", "den: Installing com.example.tv"]
+    assert err == [
+        "Copying com.example.tv to den - 0%",
+        "Installing com.example.tv on den",
+    ]
 
 
 def test_progress_line_rewrites_in_place_on_a_terminal():
@@ -187,10 +190,10 @@ def test_progress_line_rewrites_in_place_on_a_terminal():
 
     stream = Tty()
     line = _ProgressLine(stream)
-    line(Progress("org.xbmc.kodi", Phase.DOWNLOADING, 40, 100, device="den"))
+    line(Progress("org.xbmc.kodi", Phase.DOWNLOADING, 40, 100, device="den", source="lounge"))
     line(Progress("org.xbmc.kodi", Phase.INSTALLING, device="den"))
     line.clear()
     out = stream.getvalue()
-    assert out.startswith("\rden: Downloading org.xbmc.kodi - 40%")
-    assert "\rden: Installing org.xbmc.kodi" in out
+    assert out.startswith("\rDownloading org.xbmc.kodi from lounge - 40%")
+    assert "\rInstalling org.xbmc.kodi on den" in out
     assert out.endswith("\r")

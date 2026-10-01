@@ -45,8 +45,9 @@ class Phase(str, Enum):
 class Progress:
     """One step of an install, update or removal, for progress displays.
 
-    done and total are bytes for DOWNLOADING and COPYING and 0 otherwise. device is set
-    by callers that work across several Shields (fleet.sync).
+    done and total are bytes for DOWNLOADING and COPYING and 0 otherwise. device (the
+    Shield being changed) and source (the Shield an app is downloaded from) are set by
+    callers that know them, such as fleet.sync and the CLI.
     """
 
     package: str
@@ -55,6 +56,7 @@ class Progress:
     total: int = 0
     device: str | None = None
     message: str = ""
+    source: str | None = None
 
     @property
     def percent(self) -> int | None:
@@ -63,14 +65,26 @@ class Progress:
         return None
 
     def describe(self) -> str:
-        """Software-Center-style text, e.g. "Downloading org.xbmc.kodi - 40%"."""
+        """Software-Center-style text, e.g. "Downloading org.xbmc.kodi from den - 40%"."""
         text = f"{self.phase.value.capitalize()} {self.package}"
+        where = self.source or self.device if self.phase is Phase.DOWNLOADING else self.device
+        if where:
+            text += f" {_PREPOSITION[self.phase]} {where}"
         if self.percent is not None:
             text += f" - {self.percent}%"
         if self.message:
             text += f": {self.message}"
         return text
 
+
+_PREPOSITION = {
+    Phase.DOWNLOADING: "from",
+    Phase.COPYING: "to",
+    Phase.INSTALLING: "on",
+    Phase.REMOVING: "from",
+    Phase.DONE: "on",
+    Phase.FAILED: "on",
+}
 
 ProgressCallback = Callable[[Progress], None]
 
