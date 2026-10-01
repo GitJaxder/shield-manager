@@ -34,6 +34,7 @@ class Step:
     stage: str = QUEUED
     percent: float | None = None  # None while the stage has no measurable progress
     error: str | None = None
+    store: bool = False  # failed because no copy fits; the Play Store page can install it
 
     def update(self, stage: str, percent: float | None = None, error: str | None = None) -> None:
         self.stage, self.percent, self.error = stage, percent, error
@@ -47,6 +48,7 @@ class Step:
             "stage": self.stage,
             "percent": None if self.percent is None else round(self.percent, 1),
             "error": self.error,
+            "store": self.store,
         }
 
 

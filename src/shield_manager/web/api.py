@@ -138,7 +138,10 @@ class Api:
             with self._connected(device) as conn:
                 return {"device": device.name, "ok": True, "result": action(conn)}
         except Exception as e:  # report per device so one bad Shield doesn't hide the rest
-            return {"device": device.name, "ok": False, "error": _err(e)}
+            result = {"device": device.name, "ok": False, "error": _err(e)}
+            if isinstance(e, deploy.IncompatibleAppError):
+                result["incompatible"] = True  # the page offers the Play Store instead
+            return result
 
     def _on_devices(self, devices: list[Device], action: Callable[[Any], Any]) -> list[dict]:
         if not devices:
@@ -390,6 +393,7 @@ class Api:
                             step.update(DONE)
                         else:
                             step.update(FAILED, error=result["error"])
+                            step.store = result.get("incompatible", False)
                         job.results.append({"package": package, **result})
             except Exception as e:
                 for step in mine:
@@ -551,6 +555,17 @@ class Api:
 
     def list_jobs(self) -> list[dict]:
         return [j.to_dict() for j in self.jobs.list()]
+
+    def open_store_page(self, body: dict) -> dict:
+        """Open an app's Play Store page on one Shield's screen, ready to press Install."""
+        package = self._packages(body)
+        if len(package) != 1:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "pick one app")
+        device = self._get(str(body.get("device", "")))
+        result = self._on_device(device, lambda c: deploy.open_store_page(c, package[0]))
+        if not result["ok"]:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, result["error"])
+        return {"device": device.name, "package": package[0]}
 
     def uninstall(self, body: dict) -> dict:
         """Remove apps from the given Shields. Each Shield is connected to once."""

@@ -126,6 +126,8 @@
   .step-head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .step-head .pct { font-variant-numeric: tabular-nums; opacity: .85; }
   .step small { margin-top: 2px; }
+  .job button.store { font-size: 14px; font-weight: 600; margin-top: 6px; padding: 6px 12px; border-radius: 8px;
+    background: var(--accent); color: var(--accent-ink); }
   .pbar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--bg) 25%, transparent);
     overflow: hidden; margin-top: 4px; position: relative; }
   /* No width transition: the tray is redrawn on every poll, so it would restart from 0. */
@@ -331,7 +333,8 @@ function stageText(st) {
     case "installing": return `Installing ${st.label} on ${st.device}`;
     case "done": return "Installed";
     case "skipped": return "Already up to date";
-    case "failed": return `Failed: ${st.error || "unknown error"}`;
+    // The CLI hint at the end of the error is for the terminal; the page has a button instead.
+    case "failed": return `Failed: ${(st.error || "unknown error").replace(/ \(`shield-manager [^`]*` [^)]*\)/, "")}`;
   }
   return st.stage;
 }
@@ -347,7 +350,23 @@ function stepRow(st) {
     <div class="step-head"><span class="grow">${esc(st.label)} → ${esc(st.device)}</span>
       ${active && st.percent != null ? `<span class="pct">${Math.round(st.percent)}%</span>` : ""}</div>
     <div class="pbar ${bar}"><i style="width:${width}%${bar === "ind" ? `;animation-delay:-${(Date.now() % 1200) / 1000}s` : ""}"></i></div>
-    <small>${esc(stageText(st))}</small></div>`;
+    <small>${esc(stageText(st))}</small>
+    ${st.stage === "failed" && st.store ? `<button class="store" data-store="${esc(st.package)}" data-device="${esc(st.device)}">Open in Play Store on ${esc(st.device)}</button>` : ""}</div>`;
+}
+
+// Opens the app's Play Store page on that Shield's TV, so one press of Install finishes it.
+async function openStorePage(btn) {
+  const device = btn.dataset.device;
+  btn.disabled = true;
+  btn.textContent = `Opening on ${device}…`;
+  try {
+    await api("POST", "store-page", {package: btn.dataset.store, device});
+    notice(`Opened the Play Store on ${device}. Press Install with the remote.`, "", 8000);
+  } catch (e) {
+    notice(`Couldn't open the Play Store on ${device}: ${e.message}`);
+  }
+  btn.disabled = false;
+  btn.textContent = `Open in Play Store on ${device}`;
 }
 
 // Live install stages per app, so cards can say "Installing on den" while a job runs.
@@ -379,7 +398,9 @@ function track(job) {
       ${hidden > 0 ? `<button class="more" data-more style="font-size:13px;text-align:left;padding:0;opacity:.8">Show ${hidden} more</button>` : ""}
       ${expanded && pool.length > 3 ? `<button data-less style="font-size:13px;text-align:left;padding:0;opacity:.8">Show less</button>` : ""}`;
     el.onclick = (ev) => {
-      if (ev.target.closest("[data-x]")) el.remove();
+      const store = ev.target.closest("[data-store]");
+      if (store) openStorePage(store);
+      else if (ev.target.closest("[data-x]")) el.remove();
       else if (ev.target.closest("[data-more]")) { expanded = true; draw(j); }
       else if (ev.target.closest("[data-less]")) { expanded = false; draw(j); }
     };
