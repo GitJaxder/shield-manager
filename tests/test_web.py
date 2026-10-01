@@ -790,3 +790,19 @@ def test_download_page_for_an_app_on_a_shield(ui):
     assert status == 200 and body["url"] == "https://www.apkmirror.com/apk/kodi"
     assert body["site"] == "APKMirror"
     assert asked == [("org.xbmc.kodi", "20.0", asked[0][2])]  # den has the newest, 20.0
+
+
+def test_settings_for_one_shield(ui):
+    status, body = ui("GET", "/api/devices/living/settings")
+    assert status == 200 and body["device"] == "living"
+    groups = {g["name"]: g["settings"] for g in body["groups"]}
+    font = next(s for s in groups["Display"] if s["id"] == "font-size")
+    assert font["kind"] == "choice" and font["display"] == "Default"
+    assert [o["label"] for o in font["options"]] == ["Small", "Default", "Large", "Largest"]
+    status, body = ui("PUT", "/api/devices/living/settings/font-size", {"value": "1.3"})
+    assert status == 200 and body["display"] == "Largest"
+    status, body = ui("PUT", "/api/devices/living/settings/font-size", {"value": "9"})
+    assert status == 409 and "living: Font size can't be '9'" in body["error"]
+    assert ui("PUT", "/api/devices/living/settings/adb", {"value": "0"})[0] == 404
+    assert ui("PUT", "/api/devices/living/settings/hdmi-cec", {"value": 1})[0] == 400
+    assert ui("GET", "/api/devices/nope/settings")[0] == 404

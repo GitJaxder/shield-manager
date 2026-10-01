@@ -112,6 +112,20 @@
   .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   @media (max-width: 520px) { #devices .row { flex-wrap: wrap; } #devices .actions { width: 100%; justify-content: flex-start; } }
+  /* settings sheet */
+  .set-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .set-row:last-child { border-bottom: none; }
+  .set-row .grow { flex: 1; min-width: 0; }
+  .set-row select { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); max-width: 55%; min-width: 0; }
+  .set-row small { display: block; font-size: 12px; }
+  .switch { appearance: none; -webkit-appearance: none; width: 46px; height: 28px; border-radius: 14px;
+    background: var(--chip); border: 1px solid var(--border); position: relative; cursor: pointer; flex: none; margin: 0; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+    border-radius: 50%; background: var(--text); opacity: .6; transition: left .15s; }
+  .switch:checked { background: var(--accent); border-color: var(--accent); }
+  .switch:checked::after { left: 21px; background: #fff; opacity: 1; }
+  .switch:disabled, .set-row select:disabled { opacity: .5; }
   /* jobs tray */
   #tray { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom));
     width: min(520px, calc(100% - 24px)); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; z-index: 20; }
@@ -650,6 +664,78 @@ async function openDeviceApps(name) {
   load();
 }
 
+// ---- one Shield's settings ------------------------------------------------------------
+function settingControl(st) {
+  const id = `set-${esc(st.id)}`;
+  if (st.kind === "toggle") {
+    return `<input type="checkbox" class="switch" id="${id}" data-id="${esc(st.id)}" role="switch" ${st.value === "1" ? "checked" : ""} aria-label="${esc(st.label)}">`;
+  }
+  const known = st.options.some((o) => o.value === st.value);
+  const opts = st.options.map((o) => {
+    // Screensavers and keyboards not known by name show their package; use the app's name.
+    const label = st.kind === "choice" ? o.label : appLabel(o.label);
+    return `<option value="${esc(o.value)}" ${o.value === st.value ? "selected" : ""}>${esc(label)}</option>`;
+  });
+  if (!known) opts.unshift(`<option value="" selected disabled>${esc(st.display)}</option>`);
+  if (!st.options.length) return `<span class="muted">${esc(st.display)}</span>`;
+  return `<select id="${id}" data-id="${esc(st.id)}" data-was="${esc(known ? st.value : "")}" aria-label="${esc(st.label)}">${opts.join("")}</select>`;
+}
+
+function settingRow(st) {
+  return `<div class="set-row" data-id="${esc(st.id)}"><label class="grow" for="set-${esc(st.id)}">${esc(st.label)}<small class="muted"></small></label>${settingControl(st)}</div>`;
+}
+
+async function openDeviceSettings(name) {
+  const sheet = $("#sheet");
+  const body = $("#sheet-body");
+  const picker = state.devices.map((d) =>
+    `<option value="${esc(d.name)}" ${d.name === name ? "selected" : ""}>${esc(d.name)}</option>`).join("");
+  body.innerHTML = `
+    <div class="sheet-head"><div class="grow" style="min-width:0"><h2>Settings</h2>
+      <select id="set-device" aria-label="Shield" style="margin-top:6px;padding:6px 10px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text)">${picker}</select></div>
+      <button class="close" aria-label="Close">×</button></div>
+    <div id="set-groups"><p class="muted">Reading settings from ${esc(name)}…</p></div>
+    <p class="muted" style="font-size:13px">Changes apply right away. Network, ADB and device name aren't listed so the Shield stays connected. Nvidia's own options (AI upscaling, display modes) can't be reached without root.</p>`;
+  const load = async () => {
+    $("#set-groups").innerHTML = `<p class="muted">Reading settings from ${esc(name)}…</p>`;
+    try {
+      const r = await api("GET", `devices/${encodeURIComponent(name)}/settings`);
+      $("#set-groups").innerHTML = r.groups.map((g) => `
+        <div class="section-title">${esc(g.name)}</div>
+        <div class="panel">${g.settings.map(settingRow).join("")}</div>`).join("");
+    } catch (e) { $("#set-groups").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  };
+  body.onclick = (ev) => { if (ev.target.closest(".close")) sheet.close(); };
+  body.onchange = async (ev) => {
+    const el = ev.target;
+    if (el.id === "set-device") { name = el.value; return load(); }
+    const id = el.dataset.id;
+    if (!id) return;
+    const row = el.closest(".set-row");
+    const note = $("small", row);
+    const value = el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value;
+    const label = $("label", row).firstChild.textContent;
+    el.disabled = true;
+    note.className = "muted";
+    note.textContent = `Setting ${label} on ${name}…`;
+    try {
+      const st = await api("PUT", `devices/${encodeURIComponent(name)}/settings/${encodeURIComponent(id)}`, {value});
+      row.outerHTML = settingRow(st);
+      const fresh = body.querySelector(`.set-row[data-id="${CSS.escape(id)}"] small`);
+      fresh.className = "ok";
+      fresh.textContent = `Saved on ${name}: ${st.display}`;
+    } catch (e) {
+      if (el.type === "checkbox") el.checked = !el.checked;
+      else el.value = el.dataset.was;
+      el.disabled = false;
+      note.className = "err";
+      note.textContent = e.message;
+    }
+  };
+  sheet.showModal();
+  load();
+}
+
 // ---- updates online (GitHub) -----------------------------------------------------
 const CHECK_EVERY = 6 * 3600;  // seconds; an older check is redone when the page opens
 
@@ -1024,6 +1110,7 @@ function renderDevices() {
         ${d.reference ? "" : '<button class="btn small" data-act="ref">Make reference</button>'}
         <button class="btn small" data-act="info">Check</button>
         <button class="btn small" data-act="apps">Apps</button>
+        <button class="btn small" data-act="settings">Settings</button>
         <button class="btn small" data-act="groups">Groups</button>
         <button class="btn small danger" data-act="remove">Remove</button>
       </div></div>`).join("")
@@ -1054,6 +1141,8 @@ $("#devices").addEventListener("click", async (ev) => {
     run(async () => { await api("PUT", "reference", {name}); await loadDevices(); loadCatalog(); });
   } else if (b.dataset.act === "apps") {
     openDeviceApps(name);
+  } else if (b.dataset.act === "settings") {
+    openDeviceSettings(name);
   } else if (b.dataset.act === "groups") {
     const d = state.devices.find((x) => x.name === name);
     const input = prompt(`Groups for ${name}, separated by commas`, d.groups.join(", "));
