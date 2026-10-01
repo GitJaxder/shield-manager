@@ -68,6 +68,9 @@ class Handler(BaseHTTPRequestHandler):
             path = url.path[len("/api/") :]
             if method == "GET" and path.startswith("images/"):
                 return self._send_image(unquote(path[len("images/") :]))
+            if method == "GET" and path.startswith("screens/"):
+                png = self.server.api.screen_image(unquote(path[len("screens/") :]))
+                return self._send_bytes(png, "image/png")
             self._send_json(HTTPStatus.OK, self._route(method, path, parse_qs(url.query)))
         except ApiError as e:
             self._send_json(e.status, {"error": str(e)})
@@ -95,6 +98,8 @@ class Handler(BaseHTTPRequestHandler):
                 return api.set_groups(name, self._json_body())
             case "GET", ["devices", name, "info"]:
                 return api.device_info(name)
+            case "GET", ["now-showing"]:
+                return api.now_showing()
             case "PUT", ["reference"]:
                 return api.set_reference(self._json_body())
             case "GET", ["catalog"]:
