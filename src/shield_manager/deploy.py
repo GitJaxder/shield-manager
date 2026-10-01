@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import re
 import shlex
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from shield_manager import bundle
 from shield_manager.apk import native_abis
 
 REMOTE_TMP_DIR = "/data/local/tmp"
@@ -185,8 +187,9 @@ def install(
     """Install or update an app and confirm the device now reports the expected version.
 
     Pass several paths for a split APK (a base.apk plus its config splits), as pulled from
-    an app installed through the Play Store. progress, if given, receives COPYING events
-    with byte counts, then INSTALLING, then DONE.
+    an app installed through the Play Store, or an APK bundle (.apkm, .xapk, .apks), of
+    which only the splits this Shield's CPU type needs are copied. progress, if given,
+    receives COPYING events with byte counts, then INSTALLING, then DONE.
     """
     progress = progress or _ignore
     paths = (
@@ -194,6 +197,18 @@ def install(
     )
     if not paths:
         raise DeployError("no APK files given")
+    if any(bundle.is_bundle(p) for p in paths):
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                apks = bundle.expand(paths, Path(tmp))
+            except bundle.BundleError as e:
+                raise DeployError(str(e)) from e
+            return install(conn, apks, package, version_code, allow_downgrade, progress)
+    if any(bundle.split_abi(p.name) for p in paths[1:]):
+        try:
+            paths = bundle.pick(paths, device_abis(conn))
+        except bundle.BundleError as e:
+            raise IncompatibleAppError(str(e)) from e
     remotes = [f"{REMOTE_TMP_DIR}/{package}.{i}.apk" for i in range(len(paths))]
     flags = "-r -d" if allow_downgrade else "-r"
     long_op = {**_LONG, "timeout_s": INSTALL_TIMEOUT_S}

@@ -98,6 +98,7 @@ Apps (`-d NAME`, `-g GROUP` and `--all` pick targets and can be combined):
 
 ```sh
 shield-manager app install kodi.apk --all          # installs, or updates if already present
+shield-manager app install steamlink.apkm -d bedroom   # APK bundles work too
 shield-manager app install kodi.apk -g upstairs --allow-downgrade
 shield-manager app version org.xbmc.kodi --all     # installed version per device
 shield-manager app list -d living-room             # third-party apps (--system for all)
@@ -106,6 +107,11 @@ shield-manager app uninstall org.xbmc.kodi -d den
 
 While it works, installs, removals and `fleet sync` show live progress such as
 `den: Downloading org.xbmc.kodi - 40%`, then `Copying`, then `Installing`.
+
+`app install` takes an APK or an APK bundle: APKMirror's `.apkm`, `.xapk`, or bundletool's
+`.apks`. From a bundle, each Shield gets the base APK plus the split for its own CPU type
+(and the screen and language splits), so one file works on every Shield model. Bundles from
+APKMirror that are encrypted (older uploads) can't be installed; download another version.
 
 After an install the tool checks that each device reports the APK's `versionCode`. Devices are
 handled one at a time; an unreachable device is reported and the rest still run, and the
@@ -203,12 +209,13 @@ com.valvesoftware.steamlink: FAILED: no copy bedroom can run.
 To use a download link:
 
 1. Open it on your computer.
-2. Download the APK file. On APKMirror, scroll to the download section and press
-   **DOWNLOAD APK**.
+2. Download the file. On APKMirror, scroll to the download section and press
+   **DOWNLOAD APK**, or **DOWNLOAD APK BUNDLE** for apps that come as a bundle (an `.apkm`
+   file). Either works.
 3. Install it on the Shield:
 
    ```sh
-   shield-manager app install ~/Downloads/the-file.apk -d bedroom
+   shield-manager app install ~/Downloads/the-file.apkm -d bedroom
    ```
 
    Or upload it on the web UI's **Shields** tab.
