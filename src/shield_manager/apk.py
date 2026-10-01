@@ -74,39 +74,163 @@ _SIG_BLOCK_MAGIC = b"APK Sig Block 42"
 
 
 def signers(path: str | Path) -> set[str]:
-    """SHA-256 fingerprints of the certificates an APK is signed with (scheme v2 or later).
+    """SHA-256 fingerprints of the certificates an APK is verifiably signed with (scheme v2
+    or later).
 
-    Two copies of an app come from the same developer when their fingerprints overlap.
-    Returns an empty set for an APK signed only with the old v1 scheme, or one that can't
-    be read, so callers treat it as unverifiable.
+    Each signer's signature is checked against its public key, and the APK's contents
+    against the digest it signed, the way Android does, so a file that only copies a
+    developer's (public) certificate gets no fingerprint. Two copies of an app come from the
+    same developer when their fingerprints overlap. Returns an empty set for an APK signed
+    only with the old v1 scheme, or one that can't be read or verified, so callers treat it
+    as unverifiable.
     """
     try:
         data = Path(path).read_bytes()
-        return {hashlib.sha256(cert).hexdigest() for cert in _signer_certs(data)}
-    except (OSError, struct.error, ValueError):
+        return {hashlib.sha256(cert).hexdigest() for cert in _verified_certs(data)}
+    except (OSError, struct.error, ValueError, IndexError):
         return set()
 
 
-def _signer_certs(data: bytes) -> list[bytes]:
+# Signature algorithm ids (APK Signature Scheme v2): (hash, padding or curve kind).
+_SHA256, _SHA512 = hashlib.sha256, hashlib.sha512
+_ALGORITHMS = {
+    0x0101: (_SHA256, "pss"),
+    0x0102: (_SHA512, "pss"),
+    0x0103: (_SHA256, "pkcs1"),
+    0x0104: (_SHA512, "pkcs1"),
+    0x0201: (_SHA256, "ecdsa"),
+    0x0202: (_SHA512, "ecdsa"),
+    0x0301: (_SHA256, "dsa"),
+}
+_CHUNK = 1024 * 1024
+
+
+def _verified_certs(data: bytes) -> list[bytes]:
+    """The first certificate of every signer whose signature and digest check out."""
     eocd = data.rfind(b"PK\x05\x06", max(0, len(data) - 65_557))
     if eocd < 0:
         return []
     (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
-    if data[cd_offset - 16 : cd_offset] != _SIG_BLOCK_MAGIC:
+    if cd_offset < 24 or data[cd_offset - 16 : cd_offset] != _SIG_BLOCK_MAGIC:
         return []
     (size,) = struct.unpack_from("<Q", data, cd_offset - 24)
-    pos, end = cd_offset - size - 8 + 8, cd_offset - 24
+    block_start = cd_offset - size - 8
+    if block_start < 0 or struct.unpack_from("<Q", data, block_start)[0] != size:
+        raise ValueError("damaged signing block")
+    sections = (
+        data[:block_start],
+        data[cd_offset:eocd],
+        _eocd_pointing_at(data, eocd, block_start),
+    )
+    digests: dict[object, bytes] = {}
+
+    def content_digest(hash_fn) -> bytes:
+        if hash_fn not in digests:
+            digests[hash_fn] = _content_digest(sections, hash_fn)
+        return digests[hash_fn]
+
     certs = []
+    pos, end = block_start + 8, cd_offset - 24
     while pos + 12 <= end:
         length, block_id = struct.unpack_from("<QI", data, pos)
         value = data[pos + 12 : pos + 8 + length]
         if block_id in _SIGNATURE_BLOCK_IDS:
+            v3 = block_id != _SIGNATURE_BLOCK_IDS[0]
             for signer in _length_prefixed(_length_prefixed(value, 0)[0]):
-                signed_data = _length_prefixed(signer, 0)[0]
-                certificates = _length_prefixed(signed_data, 1)[0]  # after the digests
-                certs.extend(_length_prefixed(certificates))
+                cert = _verify_signer(signer, v3, content_digest)
+                if cert is not None:
+                    certs.append(cert)
         pos += 8 + length
     return certs
+
+
+def _eocd_pointing_at(data: bytes, eocd: int, block_start: int) -> bytes:
+    """The end-of-central-directory record as it was before the signing block was added:
+    its central directory offset is the block's start."""
+    record = bytearray(data[eocd:])
+    struct.pack_into("<I", record, 16, block_start)
+    return bytes(record)
+
+
+def _content_digest(sections: tuple[bytes, ...], hash_fn) -> bytes:
+    """The APK Signature Scheme v2 digest: a hash of the hashes of every 1 MB chunk."""
+    chunk_digests = []
+    for section in sections:
+        for i in range(0, len(section), _CHUNK):
+            chunk = section[i : i + _CHUNK]
+            chunk_digests.append(hash_fn(b"\xa5" + struct.pack("<I", len(chunk)) + chunk).digest())
+    return hash_fn(
+        b"\x5a" + struct.pack("<I", len(chunk_digests)) + b"".join(chunk_digests)
+    ).digest()
+
+
+def _verify_signer(signer: bytes, v3: bool, content_digest) -> bytes | None:
+    """The signer's certificate if its signature and content digest are valid, else None."""
+    from cryptography import x509
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import dsa, ec, padding, rsa
+
+    signed_data, rest = _take(signer)
+    if v3:
+        rest = rest[8:]  # minSdkVersion, maxSdkVersion
+    signatures, rest = _take(rest)
+    public_key_der, _ = _take(rest)
+
+    supported = {}
+    for entry in _length_prefixed(signatures):
+        (algorithm,) = struct.unpack_from("<I", entry, 0)
+        if algorithm in _ALGORITHMS:
+            supported[algorithm] = _take(entry[4:])[0]
+    if not supported:
+        return None
+    algorithm = max(supported, key=lambda a: (_ALGORITHMS[a][0] is _SHA512, a))
+    hash_fn, kind = _ALGORITHMS[algorithm]
+    hash_alg = hashes.SHA512() if hash_fn is _SHA512 else hashes.SHA256()
+
+    public_key = serialization.load_der_public_key(public_key_der)
+    signature = supported[algorithm]
+    try:
+        if kind == "pss" and isinstance(public_key, rsa.RSAPublicKey):
+            salt = hash_alg.digest_size
+            pss = padding.PSS(mgf=padding.MGF1(hash_alg), salt_length=salt)
+            public_key.verify(signature, signed_data, pss, hash_alg)
+        elif kind == "pkcs1" and isinstance(public_key, rsa.RSAPublicKey):
+            public_key.verify(signature, signed_data, padding.PKCS1v15(), hash_alg)
+        elif kind == "ecdsa" and isinstance(public_key, ec.EllipticCurvePublicKey):
+            public_key.verify(signature, signed_data, ec.ECDSA(hash_alg))
+        elif kind == "dsa" and isinstance(public_key, dsa.DSAPublicKey):
+            public_key.verify(signature, signed_data, hash_alg)
+        else:
+            return None
+    except InvalidSignature:
+        return None
+
+    digests_blob, rest = _take(signed_data)
+    certificates, _ = _take(rest)
+    signed_digests = {}
+    for entry in _length_prefixed(digests_blob):
+        (digest_algorithm,) = struct.unpack_from("<I", entry, 0)
+        signed_digests[digest_algorithm] = _take(entry[4:])[0]
+    if signed_digests.get(algorithm) != content_digest(hash_fn):
+        return None
+
+    certs = _length_prefixed(certificates)
+    if not certs:
+        return None
+    cert_key = x509.load_der_x509_certificate(certs[0]).public_key()
+    spki = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    if cert_key.public_bytes(*spki) != public_key.public_bytes(*spki):
+        return None
+    return certs[0]
+
+
+def _take(blob: bytes) -> tuple[bytes, bytes]:
+    """The first uint32-length-prefixed item in blob, and what follows it."""
+    (length,) = struct.unpack_from("<I", blob, 0)
+    if 4 + length > len(blob):
+        raise ValueError("truncated signing block")
+    return blob[4 : 4 + length], blob[4 + length :]
 
 
 def _length_prefixed(blob: bytes, index: int | None = None) -> list[bytes]:

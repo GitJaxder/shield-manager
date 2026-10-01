@@ -236,7 +236,12 @@ from. If an app can't be installed, its row lists what each source had (see
 The web UI has no login. On a computer it listens on localhost only by default:
 
 - `--host 0.0.0.0` exposes it to your network.
-- `--allow-from IP` limits it to one client, such as a reverse proxy or Home Assistant.
+- `--allow-from IP` limits it to one client, such as a reverse proxy. That client is
+  trusted to check who's asking, so give it a proxy, not a computer with a web browser.
+- `--hostname NAME` lets the page be opened by a name such as `shield.lan`. Without
+  `--allow-from`, the page only answers to its IP addresses, `localhost` and these names,
+  so a website you visit can't reach it by pointing its own name at your network (DNS
+  rebinding).
 - `--port` changes the port (default `8765`).
 
 The page uses only relative URLs, so it works behind a path prefix such as Home Assistant's

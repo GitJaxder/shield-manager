@@ -3,6 +3,22 @@
 Each version is released as a GitHub release tagged `v<version>`. Home Assistant's app
 store offers the app's new version once it's released.
 
+## 0.2.3
+
+### Security
+
+- Downloads from GitHub are only installed when they're really signed by the developer of
+  the copy on your Shields. Before, a file that merely contained a copy of the developer's
+  (public) certificate passed the check; Android refused to install it, but only at the
+  last step. The signature and the file's contents are now checked the way Android checks
+  them.
+- The web UI checks which name it was opened by on every address, not only on localhost, so
+  websites can't reach it through DNS rebinding when you run it with `--host 0.0.0.0`. Add
+  `--hostname NAME` for each name you open it by besides its IP address.
+- Other websites can't show the web UI in a hidden frame to trick clicks out of you.
+- A bundle that unpacks to more than 4 GB (a "zip bomb") is refused instead of filling the
+  disk, and a request with a negative length is refused instead of being read forever.
+
 ## 0.2.2
 
 ### Security

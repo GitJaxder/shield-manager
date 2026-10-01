@@ -131,6 +131,69 @@ def test_allowed_clients(tmp_path):
         server.server_close()
 
 
+def _status(server, method, path, headers, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+    conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+    for key, value in headers.items():
+        conn.putheader(key, value)
+    conn.endheaders(body)
+    res = conn.getresponse()
+    res.read()
+    conn.close()
+    return res.status, res
+
+
+@pytest.mark.parametrize(
+    "host, allowed",
+    [
+        ("evil.example:8765", False),  # DNS rebinding: a website's own name
+        ("localhost.evil.example", False),
+        ("192.168.1.20:8765", True),
+        ("[fe80::1]:8765", True),
+        ("localhost:8765", True),
+        ("shield.lan", True),  # given with --hostname
+        ("SHIELD.LAN.:8765", True),
+    ],
+)
+def test_host_header_is_checked_on_every_address(tmp_path, host, allowed):
+    server = create_server(
+        Registry(tmp_path / "d.json"), host="0.0.0.0", port=0, hostnames=["shield.lan"]
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        status, _ = _status(server, "GET", "/api/devices", {"Host": host})
+        assert (status == 200) is allowed
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_trusted_proxy_may_pass_on_its_own_host(tmp_path):
+    # Home Assistant's ingress forwards to the app with the address you opened HA by.
+    server = create_server(
+        Registry(tmp_path / "d.json"), host="0.0.0.0", port=0, allowed_clients=["127.0.0.1"]
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        headers = {"Host": "homeassistant.local:8123"}
+        assert _status(server, "GET", "/api/devices", headers)[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_page_cannot_be_framed_by_other_sites(ui):
+    status, res = _status(ui.server, "GET", "/", {"Host": "127.0.0.1"})
+    assert status == 200
+    assert "frame-ancestors 'self'" in res.getheader("Content-Security-Policy")
+    assert res.getheader("X-Frame-Options") == "SAMEORIGIN"
+
+
+def test_negative_content_length_is_refused(ui):
+    headers = {"Host": "127.0.0.1", "X-Shield-Manager": "1", "Content-Length": "-1"}
+    assert _status(ui.server, "POST", "/api/devices", headers)[0] == 400
+
+
 def test_catalog_lists_every_app_with_versions_and_drift(ui):
     ui.registry.add(Device("attic", "10.0.0.9"))
     status, cat = ui("GET", "/api/catalog")
