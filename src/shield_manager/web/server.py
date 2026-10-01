@@ -115,6 +115,8 @@ class Handler(BaseHTTPRequestHandler):
                 return api.install_upload(self._receive_apk(), names, allow_downgrade)
             case "POST", ["sync"]:
                 return api.sync(self._json_body())
+            case "POST", ["store-page"]:
+                return api.open_store_page(self._json_body())
             case "POST", ["uninstall"]:
                 return api.uninstall(self._json_body())
             case "GET", ["jobs"]:

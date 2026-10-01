@@ -462,6 +462,7 @@ def test_copy_reports_an_app_no_shield_has_a_compatible_copy_of(mixed_ui):
     [step] = job["steps"]
     assert step["stage"] == "failed"
     assert "not compatible with this Shield" in step["error"]
+    assert step["store"]  # the page offers the Play Store button
     assert "com.plexapp.android" not in installed["living"]
 
 
@@ -490,3 +491,22 @@ def test_copy_downloads_a_build_when_no_shield_has_one_it_can_run(mixed_ui, tmp_
     assert job["state"] == "done", job
     assert [s["source"] for s in job["steps"]] == ["GitHub"]
     assert installed["living"][pkg][0] == 5
+
+
+def test_store_page_opens_the_play_store_on_that_shield(ui, monkeypatch):
+    from shield_manager import deploy
+    from shield_manager.web import api as web_api
+
+    opened = []
+    monkeypatch.setattr(web_api.deploy, "open_store_page", lambda conn, pkg: opened.append(pkg))
+    status, body = ui("POST", "/api/store-page", {"package": "org.xbmc.kodi", "device": "den"})
+    assert status == 200 and body == {"device": "den", "package": "org.xbmc.kodi"}
+    assert opened == ["org.xbmc.kodi"]
+
+    def refuse(conn, pkg):
+        raise deploy.DeployError("Error: Activity not started")
+
+    monkeypatch.setattr(web_api.deploy, "open_store_page", refuse)
+    status, body = ui("POST", "/api/store-page", {"package": "org.xbmc.kodi", "device": "den"})
+    assert status == 502 and "Activity not started" in body["error"]
+    assert ui("POST", "/api/store-page", {"package": "org.xbmc.kodi", "device": "x"})[0] == 404
