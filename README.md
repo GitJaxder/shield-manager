@@ -44,6 +44,7 @@ this repository's source.
   - [Use a download link](#use-a-download-link)
 - [Where your data is stored](#where-your-data-is-stored)
 - [Development](#development)
+  - [Release a new version](#release-a-new-version)
 - [License](#license)
 
 ## Before you start: prepare your Shields
@@ -85,8 +86,9 @@ your Shields won't ask to allow debugging again. Your Shields and settings are k
 app's storage and included in Home Assistant backups. Settings from `shield-manager` on a
 computer aren't copied over; add the Shields again in the app.
 
-**Updating:** when a new version is out, Home Assistant offers it under **Settings →
-Updates**.
+**Updating:** when a new version is released, Home Assistant offers it under **Settings →
+Updates**. Each version installs the code of its own release, listed in the
+[changelog](CHANGELOG.md).
 
 The screen in the sidebar is the same web UI described in [Use the web UI](#use-the-web-ui).
 
@@ -105,6 +107,9 @@ The integration needs [HACS](https://hacs.xyz/docs/use/download/download/).
    because the app announced itself. Select **Add**, then **Submit**.
 
    If it isn't there, make sure the app is running and restart Home Assistant once more.
+
+HACS offers new versions of the integration under **Settings → Updates** once they're
+released. Update the app and the integration together.
 
 Without HACS, copy the `custom_components/shield_manager` folder from this repository into
 the `custom_components` folder in your Home Assistant configuration folder (for example
@@ -502,6 +507,26 @@ The Home Assistant integration's tests need Python 3.13 and Home Assistant's tes
 pip install -e . pytest-homeassistant-custom-component
 pytest tests_ha -o asyncio_mode=auto
 ```
+
+### Release a new version
+
+Home Assistant's app store and HACS only offer a version once it's a GitHub release, and
+the app installs the code of the release tag that matches its version.
+
+1. In a pull request, set the new version (for example `0.2.0`) in all four places:
+   `pyproject.toml`, `src/shield_manager/__init__.py`,
+   `custom_components/shield_manager/manifest.json` and
+   `ha-app/shield_manager/config.yaml`. Add a `## 0.2.0` section at the top of
+   `CHANGELOG.md`. CI fails if any of these disagree.
+2. Merge the pull request.
+3. On GitHub, open **Releases → Draft a new release**.
+4. Select **Choose a tag**, type `v0.2.0` (a `v`, then the version), and select
+   **Create new tag: v0.2.0 on publish**. Leave the target as `main`.
+5. Set the title to `v0.2.0` and paste that version's changelog section as the description.
+6. Select **Publish release**.
+
+Publish right after merging. Until the tag exists, installing or rebuilding the app in Home
+Assistant fails, because it looks for the code of a release that isn't out yet.
 
 ## License
 
