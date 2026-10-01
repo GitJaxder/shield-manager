@@ -6,16 +6,15 @@ set -e
 # Assistant keeps across restarts, updates and backups.
 export SHIELD_MANAGER_HOME=/data
 PORT=8765
-ANDROID_TV_KEY=/homeassistant/.storage/androidtv_adbkey
 
-if [ ! -f /data/adbkey ] && bashio::config.true 'use_android_tv_key'; then
-    if [ -f "${ANDROID_TV_KEY}" ] && [ -f "${ANDROID_TV_KEY}.pub" ]; then
-        cp "${ANDROID_TV_KEY}" /data/adbkey
-        cp "${ANDROID_TV_KEY}.pub" /data/adbkey.pub
-        chmod 600 /data/adbkey
-        bashio::log.info "Using the Android TV integration's ADB key"
+# A key pasted in the options replaces the app's own, so Shields that already trust it
+# (for example Home Assistant's Android TV integration) don't ask again. Without one, the
+# app makes its own key on first use.
+if bashio::config.has_value 'adb_key'; then
+    if bashio::config 'adb_key' | shield-manager key import >/dev/null; then
+        bashio::log.info "Using the ADB key from the app's options"
     else
-        bashio::log.info "No Android TV integration key found; making a new key"
+        bashio::log.warning "The ADB key in the app's options isn't a valid private key; ignoring it"
     fi
 fi
 

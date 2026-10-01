@@ -164,6 +164,14 @@ def build_parser() -> argparse.ArgumentParser:
     source_remove = source_sub.add_parser("remove", help="stop downloading an app from GitHub")
     source_remove.add_argument("package")
 
+    key = sub.add_parser("key", help="manage the ADB key Shields are asked to trust")
+    key_sub = key.add_subparsers(dest="action", required=True)
+    key_sub.add_parser(
+        "import",
+        help="replace the ADB key with a private key read from standard input, e.g. "
+        "Home Assistant's .storage/androidtv_adbkey",
+    )
+
     web = sub.add_parser("web", help="serve the web UI")
     web.add_argument("--host", default="127.0.0.1", help="address to bind (default: localhost)")
     web.add_argument("--port", type=int, default=8765)
@@ -194,6 +202,18 @@ def _serve_web(args: argparse.Namespace, registry: Registry) -> int:
         pass
     finally:
         server.server_close()
+    return 0
+
+
+def _import_key() -> int:
+    from shield_manager import adb
+
+    try:
+        path = adb.import_key(sys.stdin.read())
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"Saved the ADB key to {path}")
     return 0
 
 
@@ -550,6 +570,8 @@ def main(argv: Sequence[str] | None = None, registry: Registry | None = None) ->
             return _run_fleet(args, registry)
         elif args.command == "source":
             return _run_source(args, registry)
+        elif args.command == "key":
+            return _import_key()
         elif args.command == "web":
             return _serve_web(args, registry)
     except DeviceExistsError as e:

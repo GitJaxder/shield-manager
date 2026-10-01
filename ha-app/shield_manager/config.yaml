@@ -1,5 +1,5 @@
 name: Shield Manager
-version: "0.2.1"
+version: "0.2.2"
 slug: shield_manager
 description: Keep the apps on your Nvidia Shields in sync and install apps from an app-store screen
 url: https://github.com/GitJaxder/shield-manager
@@ -11,11 +11,7 @@ ingress: true
 ingress_port: 8765
 panel_icon: mdi:television-play
 panel_title: Shield Manager
-# Read-only, only to copy the Android TV integration's ADB key (see use_android_tv_key).
-map:
-  - type: homeassistant_config
-    read_only: true
-options:
-  use_android_tv_key: true
+# No access to Home Assistant's own files: to reuse the Android TV integration's ADB key,
+# paste it into the adb_key option.
 schema:
-  use_android_tv_key: bool
+  adb_key: password?

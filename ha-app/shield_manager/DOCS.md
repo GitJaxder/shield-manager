@@ -26,11 +26,19 @@ can pick another one on the **Shields** tab.
 
 ## Options
 
-**Use the Android TV integration's ADB key** (on by default): when the app first starts,
-it copies the key Home Assistant's Android TV integration uses, so Shields that already
-trust Home Assistant don't ask again in step 3. Turning it off, or not having that
-integration, means the app makes its own key. The key is only copied once; to switch,
-uninstall and reinstall the app.
+**ADB key** (optional): the app makes its own ADB key, so each Shield asks once whether to
+allow it (step 3 above). If Home Assistant's Android TV integration already controls your
+Shields, you can give the app that integration's key instead, and they won't ask again:
+
+1. Install the **Terminal & SSH** app, open it, and run
+   `cat /homeassistant/.storage/androidtv_adbkey`.
+2. Copy everything it prints, from `-----BEGIN PRIVATE KEY-----` to
+   `-----END PRIVATE KEY-----`.
+3. In **Settings → Apps → Shield Manager → Configuration**, paste it into **ADB key**,
+   press **Save**, and restart the app.
+
+The app doesn't read Home Assistant's own files, so it can't see your other integrations'
+passwords and tokens. Clearing the option keeps the key the app is using.
 
 ## Your data
 
