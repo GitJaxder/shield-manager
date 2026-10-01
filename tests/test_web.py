@@ -9,6 +9,7 @@ import pytest
 
 from shield_manager import appinfo
 from shield_manager.registry import Device, Registry
+from shield_manager.sources import Downloader
 from shield_manager.web.server import create_server
 from tests.axml import build_manifest
 from tests.fakes import FakeConnection
@@ -546,7 +547,7 @@ def test_online_updates_are_checked_then_installed(ui, monkeypatch):
 
     assert ui("GET", "/api/online-updates")[1]["enabled"] is False
     assert ui("POST", "/api/online-updates/check")[0] == 409
-    ui.api.downloads = object()  # stands in for a Downloader; fleet is faked below
+    ui.api.downloads = Downloader()  # fleet is faked below, so nothing is downloaded
 
     def check_updates(devices, connect, downloads):
         update = fleet.Update("org.xbmc.kodi", "20.0", 20, "21.0", "GitHub", ["den", "living"])
@@ -586,6 +587,43 @@ def test_online_updates_are_checked_then_installed(ui, monkeypatch):
     assert steps == {"den": ("done", None), "living": ("failed", "signed by someone else")}
     # Still offered, since living didn't get it.
     assert "org.xbmc.kodi" in ui("GET", "/api/online-updates")[1]["updates"]
+
+
+def test_github_source_for_an_app_is_set_edited_and_removed(ui, tmp_path, monkeypatch):
+    from shield_manager import fleet
+
+    path = "/api/apps/org.xbmc.kodi/github-source"
+    assert ui("PUT", path, {"repo": "xbmc/xbmc"})[0] == 409  # downloads are off
+    ui.api.downloads = Downloader.from_config(tmp_path)
+    checks = []
+    monkeypatch.setattr(
+        fleet, "check_updates", lambda d, c, downloads: checks.append(1) or ([], {})
+    )
+
+    status, body = ui("PUT", path, {"repo": "https://github.com/xbmc/xbmc/releases", "asset": ""})
+    assert status == 200
+    assert body["source"] == {"repo": "xbmc/xbmc", "asset": None, "builtin": False}
+    ui.wait_job(body["check"])
+    assert checks  # the update check re-ran with the new source
+    sources = ui("GET", "/api/online-updates")[1]["sources"]
+    assert sources["org.xbmc.kodi"]["repo"] == "xbmc/xbmc"
+    assert "xbmc/xbmc" in (tmp_path / "app-sources.json").read_text()  # saved
+
+    status, body = ui("PUT", path, {"repo": "xbmc/xbmc", "asset": "arm64.*\\.apk"})
+    assert status == 200 and body["source"]["asset"] == "arm64.*\\.apk"
+    ui.wait_job(body["check"])
+
+    status, body = ui("PUT", path, {"repo": "not a repo"})
+    assert status == 400 and "not a GitHub repository" in body["error"]
+    status, body = ui("PUT", path, {"repo": "xbmc/xbmc", "asset": "("})
+    assert status == 400 and "pattern" in body["error"]
+    assert ui("PUT", "/api/apps/bad%20name/github-source", {"repo": "a/b"})[0] == 400
+
+    status, body = ui("DELETE", path)
+    assert status == 200 and body["source"] is None
+    ui.wait_job(body["check"])
+    assert "org.xbmc.kodi" not in ui("GET", "/api/online-updates")[1]["sources"]
+    assert ui("DELETE", path)[0] == 404
 
 
 def test_catalog_lists_each_change_for_the_sync_preview(ui):

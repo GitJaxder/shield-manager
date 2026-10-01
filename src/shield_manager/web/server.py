@@ -121,6 +121,10 @@ class Handler(BaseHTTPRequestHandler):
                 return api.check_online_updates()
             case "POST", ["online-updates", "install"]:
                 return api.install_online_updates(self._json_body())
+            case "PUT", ["apps", package, "github-source"]:
+                return api.set_github_source(package, self._json_body())
+            case "DELETE", ["apps", package, "github-source"]:
+                return api.remove_github_source(package)
             case "GET", ["download-page"]:
                 return api.download_page(query)
             case "GET", ["devices", name, "apps"]:
