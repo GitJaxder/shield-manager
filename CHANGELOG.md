@@ -3,6 +3,15 @@
 Each version is released as a GitHub release tagged `v<version>`. Home Assistant's app
 store offers the app's new version once it's released.
 
+## 0.2.1
+
+### Security
+
+- Installing a split app or an APK bundle (.apkm, .xapk, .apks) could run commands on the
+  Shield: the file names inside the bundle were passed to the Shield's shell as they were.
+  A bundle someone tampered with, uploaded or downloaded from GitHub, could use that. They
+  are now cleaned and quoted.
+
 ## 0.2.0
 
 ### Removed

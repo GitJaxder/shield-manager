@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shield-manager"
-version = "0.2.0"
+version = "0.2.1"
 description = "Deploy apps, packages, and updates to Nvidia Shield devices over ADB"
 readme = "README.md"
 license = "GPL-3.0-or-later"
