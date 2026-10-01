@@ -158,6 +158,36 @@ one-off reference, or `-d`/`-g`/`--all` to limit which Shields are checked.
 Apps copied this way are sideloaded, so paid apps that check their Play Store licence may
 refuse to run until they are installed from the Play Store on that Shield.
 
+### Mixed Shield models
+
+Different Shield models run different CPU types, and the Play Store gives each Shield only
+the version built for its own. So for each Shield, `sync` (and the web UI) tries these
+sources in order, and uses the first copy that Shield can run:
+
+1. Another Shield of the same model that already has the app.
+2. GitHub releases, for open-source apps it knows (SmartTube, the Home Assistant app).
+3. APKPure.
+4. Your other Shields.
+
+A download is only installed when it's signed by the same developer as the copy already on
+your Shields, so a tampered download is refused. Add `--no-download` to only copy between
+Shields.
+
+If none of them has a copy the Shield can run, open the app's Play Store page on that Shield
+and press **Install** with the remote:
+
+```sh
+shield-manager app store-page com.valvesoftware.steamlink -d bedroom
+```
+
+To teach it more open-source apps, create a file called `app-sources.json` next to
+`devices.json` in `~/.config/shield-manager/`, listing each app's package name and GitHub
+repository:
+
+```json
+{"github": {"org.example.app": "example/app-repo"}}
+```
+
 ## Development
 
 Follow the install steps, but in step 4 run `pip install -e ".[dev]"` instead, so code changes

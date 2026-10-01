@@ -165,3 +165,70 @@ def test_rank_sources_prefers_the_same_cpu_types():
     abis = {"ref": ARM64, "attic": ARM32, "odd": ["x86"]}
     assert fleet.rank_sources(["ref", "odd", "attic"], ARM32, abis) == ["attic", "ref", "odd"]
     assert fleet.rank_sources(["attic", "ref"], ARM64, abis) == ["ref", "attic"]
+
+
+def _download_fleet(tmp_path, github_cert=b"dev"):
+    """den (reference, 64-bit) has SmartTube 100 signed by "dev"; attic (32-bit) doesn't.
+    GitHub has a 32-bit build of the same version, signed by github_cert."""
+    import json
+
+    from shield_manager import sources
+    from tests.fakes import FakeHttp, real_apk
+
+    pkg = "com.teamsmart.videomanager.tv"
+    ref_copy = real_apk(tmp_path / "ref.apk", pkg, 100, "1.0", abis=["arm64-v8a"], cert=b"dev")
+    shields = {
+        REF.name: FakeConnection(
+            installed={pkg: (100, "1.0")}, abis=ARM64, apk_files={pkg: ref_copy}
+        ),
+        ATTIC.name: FakeConnection(abis=ARM32),
+    }
+    asset = real_apk(
+        tmp_path / "st_armeabi-v7a.apk", pkg, 100, "1.0", abis=["armeabi-v7a"], cert=github_cert
+    )
+    url = "https://github.com/dl/st_armeabi-v7a.apk"
+    http = FakeHttp(
+        {
+            "https://api.github.com/repos/yuliskov/SmartTube/releases?per_page=10": json.dumps(
+                [{"assets": [{"name": asset.name, "browser_download_url": url}]}]
+            ).encode(),
+            url: asset,
+        }
+    )
+    return pkg, shields, sources.Downloader(http, dict(sources.GITHUB_APPS))
+
+
+def test_sync_downloads_a_build_the_target_can_run(tmp_path):
+    pkg, shields, downloads = _download_fleet(tmp_path)
+    events = []
+    [attic] = fleet.sync(
+        REF, [ATTIC], lambda d: shields[d.name], downloads=downloads, progress=events.append
+    )
+    assert attic.applied == {pkg: "installed 100 (downloaded from GitHub)"}
+    assert shields[ATTIC.name].installed[pkg][0] == 100
+    assert any(e.describe().startswith(f"Downloading {pkg} from GitHub") for e in events)
+
+
+def test_sync_refuses_a_download_signed_by_someone_else(tmp_path):
+    pkg, shields, downloads = _download_fleet(tmp_path, github_cert=b"impostor")
+    [attic] = fleet.sync(REF, [ATTIC], lambda d: shields[d.name], downloads=downloads)
+    error = attic.failed[pkg]
+    assert "GitHub: its copy is signed by a different developer" in error
+    assert "APKPure: " in error
+    assert f"shield-manager app store-page {pkg}" in error
+    assert pkg not in shields[ATTIC.name].installed
+
+
+def test_source_order_puts_downloads_between_likely_and_unlikely_shields():
+    from shield_manager import sources
+
+    d = sources.Downloader(github_apps={"pkg": "o/r"})
+    abis = {"ref": ARM64, "attic": ARM32}
+    assert fleet.source_order(["ref", "attic"], ARM32, abis, "pkg", d) == [
+        "attic",
+        "GitHub",
+        "APKPure",
+        "ref",
+    ]
+    assert fleet.source_order(["ref"], ARM32, abis, "other", d) == ["APKPure", "ref"]
+    assert fleet.source_order(["ref"], ARM32, abis, "pkg", None) == ["ref"]

@@ -7,6 +7,7 @@ the format to read them instead of pulling in a full APK toolkit.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import zipfile
 from dataclasses import dataclass
@@ -65,6 +66,61 @@ def native_abis(paths: list[Path]) -> set[str]:
             if len(parts) == 3 and parts[0] == "lib" and parts[2].endswith(".so"):
                 abis.add(parts[1])
     return abis
+
+
+# APK Signature Scheme v2/v3 block ids (https://source.android.com/docs/security/features/apksigning/v2)
+_SIGNATURE_BLOCK_IDS = (0x7109871A, 0xF05368C0, 0x1B93AD61)
+_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+
+
+def signers(path: str | Path) -> set[str]:
+    """SHA-256 fingerprints of the certificates an APK is signed with (scheme v2 or later).
+
+    Two copies of an app come from the same developer when their fingerprints overlap.
+    Returns an empty set for an APK signed only with the old v1 scheme, or one that can't
+    be read, so callers treat it as unverifiable.
+    """
+    try:
+        data = Path(path).read_bytes()
+        return {hashlib.sha256(cert).hexdigest() for cert in _signer_certs(data)}
+    except (OSError, struct.error, ValueError):
+        return set()
+
+
+def _signer_certs(data: bytes) -> list[bytes]:
+    eocd = data.rfind(b"PK\x05\x06", max(0, len(data) - 65_557))
+    if eocd < 0:
+        return []
+    (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
+    if data[cd_offset - 16 : cd_offset] != _SIG_BLOCK_MAGIC:
+        return []
+    (size,) = struct.unpack_from("<Q", data, cd_offset - 24)
+    pos, end = cd_offset - size - 8 + 8, cd_offset - 24
+    certs = []
+    while pos + 12 <= end:
+        length, block_id = struct.unpack_from("<QI", data, pos)
+        value = data[pos + 12 : pos + 8 + length]
+        if block_id in _SIGNATURE_BLOCK_IDS:
+            for signer in _length_prefixed(_length_prefixed(value, 0)[0]):
+                signed_data = _length_prefixed(signer, 0)[0]
+                certificates = _length_prefixed(signed_data, 1)[0]  # after the digests
+                certs.extend(_length_prefixed(certificates))
+        pos += 8 + length
+    return certs
+
+
+def _length_prefixed(blob: bytes, index: int | None = None) -> list[bytes]:
+    """The uint32-length-prefixed items in blob, or just the item at index (as a 1-list)."""
+    items, pos = [], 0
+    while pos + 4 <= len(blob):
+        (length,) = struct.unpack_from("<I", blob, pos)
+        if pos + 4 + length > len(blob):
+            raise ValueError("truncated signing block")
+        items.append(blob[pos + 4 : pos + 4 + length])
+        pos += 4 + length
+    if index is None:
+        return items
+    return [items[index]]
 
 
 def parse_manifest(data: bytes) -> ApkInfo:

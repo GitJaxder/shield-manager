@@ -116,6 +116,22 @@ class _Transfer:
             self.progress(event)
 
 
+class ByteProgress:
+    """Turns (bytes done, total) download callbacks into whole-percent Progress events."""
+
+    def __init__(self, package: str, phase: Phase, progress: ProgressCallback, source: str):
+        self.base = Progress(package, phase, source=source)
+        self.progress = progress
+        self.last = None
+
+    def update(self, done: int, total: int) -> None:
+        event = replace(self.base, done=min(done, total), total=total)
+        key = event.percent if total else done >> 20  # unknown size: once per MiB
+        if key != self.last:
+            self.last = key
+            self.progress(event)
+
+
 def _ignore(_: Progress) -> None:
     pass
 
@@ -263,6 +279,22 @@ def package_versions(conn: Connection) -> dict[str, int]:
         if match:
             versions[match.group(1)] = int(match.group(2))
     return versions
+
+
+def open_store_page(conn: Connection, package: str) -> None:
+    """Open an app's Play Store page on the Shield's screen, ready to press Install.
+
+    The Play Store installs the build made for that Shield's CPU type, for apps no other
+    source has a matching copy of.
+    """
+    out = str(
+        conn.shell(
+            "am start -a android.intent.action.VIEW -d "
+            + shlex.quote(f"market://details?id={package}")
+        )
+    )
+    if "Error" in out or "Exception" in out:
+        raise DeployError(out.strip())
 
 
 def pull_app(

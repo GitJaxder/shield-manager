@@ -51,3 +51,34 @@ def test_not_a_zip(tmp_path):
 def test_text_manifest_rejected():
     with pytest.raises(ApkError):
         parse_manifest(b"<?xml version='1.0'?><manifest/>")
+
+
+def test_signers_reads_v2_and_v3_certificates(tmp_path):
+    import hashlib
+    import zipfile
+
+    from shield_manager.apk import signers
+    from tests.fakes import sign_apk
+
+    for block_id in (0x7109871A, 0xF05368C0):
+        path = tmp_path / f"{block_id}.apk"
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("AndroidManifest.xml", b"x")
+        sign_apk(path, b"cert-a", block_id=block_id)
+        assert signers(path) == {hashlib.sha256(b"cert-a").hexdigest()}
+        with zipfile.ZipFile(path) as zf:  # still a valid zip
+            assert zf.read("AndroidManifest.xml") == b"x"
+
+
+def test_signers_of_an_unsigned_or_broken_apk_is_empty(tmp_path):
+    import zipfile
+
+    from shield_manager.apk import signers
+
+    path = tmp_path / "plain.apk"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("AndroidManifest.xml", b"x")
+    assert signers(path) == set()
+    (tmp_path / "junk.apk").write_bytes(b"not a zip")
+    assert signers(tmp_path / "junk.apk") == set()
+    assert signers(tmp_path / "missing.apk") == set()

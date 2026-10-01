@@ -14,8 +14,10 @@ from enum import Enum
 from pathlib import Path
 
 from shield_manager import deploy
+from shield_manager.apk import ApkError, read_apk_info, signers
 from shield_manager.deploy import Connection, Phase, Progress, ProgressCallback
 from shield_manager.registry import Device
+from shield_manager.sources import Downloader, SourceUnavailable, Wanted
 
 Connector = Callable[[Device], Connection]
 
@@ -104,6 +106,116 @@ def rank_sources(
     return sorted(candidates, key=key)
 
 
+GITHUB, APKPURE = "GitHub", "APKPure"
+DOWNLOADS = (GITHUB, APKPURE)
+
+
+def source_order(
+    shields: list[str],
+    target_abis: list[str],
+    abis: dict[str, list[str]],
+    package: str,
+    downloads: Downloader | None = None,
+) -> list[str]:
+    """Every source to try for one target, best first.
+
+    Shields whose copy the target can likely run come first, then downloads (GitHub, when
+    the app's repository is known, then APKPure), then the remaining Shields.
+    """
+    ranked = rank_sources(shields, target_abis, abis)
+    if downloads is None:
+        return ranked
+    likely = [n for n in ranked if (abis.get(n) or [""])[0] in target_abis]
+    online = ([GITHUB] if downloads.github_repo(package) else []) + [APKPURE]
+    return likely + online + [n for n in ranked if n not in likely]
+
+
+Pull = Callable[[str, str, Path, ProgressCallback | None], list[Path]]
+
+
+class Fetcher:
+    """One app's APK files from Shields or downloads, each fetched at most once.
+
+    pull(shield, package, dest, progress) copies the app off a Shield. Downloads are only used when
+    they're signed by the same developer as a copy on one of holders (the Shields that
+    have the app), so a tampered download is never installed.
+    """
+
+    def __init__(
+        self,
+        package: str,
+        version_code: int,
+        holders: list[str],
+        pull: Pull,
+        tmp: Path,
+        downloads: Downloader | None = None,
+    ):
+        self.package, self.version_code, self.holders = package, version_code, holders
+        self.pull, self.tmp, self.downloads = pull, tmp, downloads
+        self.cache: dict[object, list[Path]] = {}
+
+    def get(
+        self, source: str, target_abis: list[str], progress: ProgressCallback | None = None
+    ) -> list[Path]:
+        if source not in DOWNLOADS:
+            if source not in self.cache:
+                self.cache[source] = self.pull(
+                    source, self.package, self.tmp / source / self.package, progress
+                )
+            return self.cache[source]
+        key = (source, tuple(target_abis))
+        if key not in self.cache:
+            self.cache[key] = self._download(source, target_abis, progress)
+        return self.cache[key]
+
+    def _download(
+        self, source: str, target_abis: list[str], progress: ProgressCallback | None
+    ) -> list[Path]:
+        if self.downloads is None:
+            raise SourceUnavailable("downloads are turned off")
+        trusted, version_name = self._trusted()
+        if not trusted:
+            raise SourceUnavailable(
+                "can't check who signed a download, because the copy on your Shields has no "
+                "modern (v2+) signature"
+            )
+        wanted = Wanted(self.package, self.version_code, version_name, target_abis)
+        dest = self.tmp / source.lower() / self.package / "-".join(target_abis)
+        on_bytes = None
+        if progress:
+            transfer = deploy.ByteProgress(self.package, Phase.DOWNLOADING, progress, source)
+            on_bytes = transfer.update
+        fetch = self.downloads.github if source == GITHUB else self.downloads.apkpure
+        paths = fetch(wanted, dest, on_bytes)
+        for path in paths:
+            if not signers(path) & trusted:
+                raise SourceUnavailable(
+                    f"its copy is signed by a different developer than the one on your Shields"
+                    f" ({path.name}), so it wasn't installed"
+                )
+        return paths
+
+    def _trusted(self) -> tuple[set[str], str]:
+        """Signing certificates and version name of the copy on a Shield that has the app."""
+        errors = []
+        for holder in self.holders:
+            try:
+                paths = self.get(holder, [])
+            except Exception as e:
+                errors.append(f"{holder}: {e}")
+                continue
+            certs = set().union(*(signers(p) for p in paths)) if paths else set()
+            version_name = ""
+            for path in paths:
+                try:
+                    version_name = read_apk_info(path).version_name
+                    break
+                except ApkError:
+                    continue
+            return certs, version_name
+        raise SourceUnavailable("couldn't read the copy on any Shield: " + "; ".join(errors))
+
+
 def install_first_compatible(
     conn: Connection,
     package: str,
@@ -114,22 +226,32 @@ def install_first_compatible(
 ) -> tuple[deploy.InstalledVersion, str]:
     """Install an app from the first source whose copy this Shield can run.
 
-    fetch(source) returns that Shield's APK files. Returns the installed version and the
-    source used; raises IncompatibleAppError if no source's copy fits this Shield's CPU.
+    fetch(source) returns that source's APK files, raising (e.g. SourceUnavailable) when
+    it has none to offer. Returns the installed version and the source used; raises
+    IncompatibleAppError, saying what each source lacked, if none worked.
     """
-    tried = []
+    wrong_cpu, reasons = [], []
     for source in sources:
         try:
-            return deploy.install(
-                conn, fetch(source), package, version_code, **install_kwargs
-            ), source
+            paths = fetch(source)
+        except Exception as e:  # unreachable Shield, nothing to download: try the next one
+            reasons.append(f"{source}: {e}")
+            continue
+        try:
+            return deploy.install(conn, paths, package, version_code, **install_kwargs), source
         except deploy.IncompatibleAppError:
-            tried.append(source)
+            wrong_cpu.append(source)
     runs = ", ".join(deploy.device_abis(conn)) or "a different CPU type"
+    if wrong_cpu:
+        reasons.insert(
+            0,
+            f"the copies on {', '.join(wrong_cpu)} are built for a different CPU type than "
+            f"it runs ({runs})",
+        )
+    hint = f"`shield-manager app store-page {package} -d <shield>` opens the page there"
     raise deploy.IncompatibleAppError(
-        f"not compatible with this Shield: the copies on {', '.join(tried)} are built for a "
-        f"different CPU type than it runs ({runs}). Install it on this Shield from the Play "
-        "Store instead."
+        f"not compatible with this Shield: {'; '.join(reasons)}. Install it on this Shield "
+        f"from the Play Store instead ({hint})."
     )
 
 
@@ -171,12 +293,16 @@ def sync(
     dry_run: bool = False,
     cache_dir: Path | None = None,
     progress: ProgressCallback | None = None,
+    downloads: Downloader | None = None,
 ) -> list[DeviceReport]:
     """Make each target's apps match the reference.
 
     Missing and outdated apps are copied from the reference. Apps that are newer on a
     target are left alone unless allow_downgrade is set, and apps the reference doesn't
     have are only removed when prune is set, because removing an app deletes its data.
+
+    When a target can't run any Shield's copy of an app (Shields of different models run
+    different CPU types), downloads, if given, are tried before giving up.
 
     progress, if given, receives deploy.Progress events with device set to the Shield
     being updated (including while an app is downloaded from the reference for it), and a
@@ -202,19 +328,16 @@ def sync(
                 abis[name] = []
         return abis[name]
 
-    with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
-        pulled: dict[tuple[str, str], list[Path]] = {}
+    def pull(
+        source: str, package: str, dest: Path, on_progress: ProgressCallback | None
+    ) -> list[Path]:
+        with _connected(connect, by_name[source]) as src_conn:
+            return deploy.pull_app(
+                src_conn, package, dest, progress=_from_source(on_progress, source)
+            )
 
-        def fetch(package: str, source: str, on_progress: ProgressCallback | None) -> list[Path]:
-            if (package, source) not in pulled:
-                with _connected(connect, by_name[source]) as src_conn:
-                    pulled[package, source] = deploy.pull_app(
-                        src_conn,
-                        package,
-                        Path(tmp) / source / package,
-                        progress=_from_source(on_progress, source),
-                    )
-            return pulled[package, source]
+    with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
+        fetchers: dict[str, Fetcher] = {}
 
         for report in reports:
             if report.error:
@@ -242,22 +365,45 @@ def sync(
                                 for n, theirs in drifted.items()
                                 if n != name and d.package not in theirs
                             ]
-                            sources = [reference.name, *others]
-                            if others:
-                                sources = rank_sources(
-                                    sources, abis[name], {n: abis_of(n) for n in sources}
+                            holders = [reference.name, *others]
+                            fetcher = fetchers.setdefault(
+                                d.package,
+                                Fetcher(
+                                    d.package,
+                                    d.reference_version,
+                                    holders,
+                                    pull,
+                                    Path(tmp),
+                                    downloads,
+                                ),
+                            )
+                            fetcher.holders = holders
+                            sources = holders
+                            if others or downloads:
+                                sources = source_order(
+                                    holders,
+                                    abis[name],
+                                    {n: abis_of(n) for n in holders},
+                                    d.package,
+                                    downloads,
                                 )
                             _, source = install_first_compatible(
                                 conn,
                                 d.package,
                                 d.reference_version,
                                 sources,
-                                lambda src, pkg=d.package, cb=on_progress: fetch(pkg, src, cb),
+                                lambda src, f=fetcher, a=abis[name], cb=on_progress: f.get(
+                                    src, a, cb
+                                ),
                                 allow_downgrade=d.change is Change.NEWER,
                                 progress=on_progress,
                             )
                             verb = _PAST_TENSE[d.change]
-                            via = "" if source == reference.name else f" (copied from {source})"
+                            via = ""
+                            if source in DOWNLOADS:
+                                via = f" (downloaded from {source})"
+                            elif source != reference.name:
+                                via = f" (copied from {source})"
                             report.applied[d.package] = f"{verb} {d.reference_version}{via}"
                             drifted[name].discard(d.package)  # can now be a source too
                         except Exception as e:
