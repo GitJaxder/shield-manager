@@ -102,3 +102,21 @@ def test_sync_records_per_app_failures(connect, shields):
     [report] = fleet.sync(REF, [DEN], connect)
     assert "INSUFFICIENT_STORAGE" in report.failed["plex"]
     assert report.applied["kodi"] == "updated to 200"
+
+
+def test_sync_reports_progress_per_device(connect, shields):
+    events = []
+    fleet.sync(REF, [DEN], connect, progress=events.append)
+    assert {e.device for e in events} == {"den"}
+    plex = [e.phase.value for e in events if e.package == "plex"]
+    assert plex[0] == "downloading"
+    assert plex.index("copying") > plex.index("downloading")
+    assert plex[-2:] == ["installing", "done"]
+
+
+def test_sync_reports_failures_as_progress(connect, shields):
+    shields[DEN.name].responses["pm install-create"] = "Failure [INSUFFICIENT_STORAGE]"
+    events = []
+    fleet.sync(REF, [DEN], connect, progress=events.append)
+    [failed] = [e for e in events if e.phase.value == "failed"]
+    assert failed.package == "plex" and "INSUFFICIENT_STORAGE" in failed.message

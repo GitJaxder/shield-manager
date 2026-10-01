@@ -19,18 +19,26 @@ class FakeConnection:
         self.staged = {}  # remote path -> (package, version_code)
         self.closed = False
 
-    def push(self, local_path, device_path, **kwargs):
+    def push(self, local_path, device_path, progress_callback=None, **kwargs):
         self.pushed.append((local_path, device_path))
         local = Path(local_path)
+        if progress_callback and local.exists():
+            _report_chunks(progress_callback, device_path, local.stat().st_size)
         text = local.read_bytes().decode(errors="replace") if local.exists() else ""
         if text.count(":") == 1:
             package, code = text.split(":")
             self.staged[device_path] = (package, int(code))
 
-    def pull(self, device_path, local_path, **kwargs):
-        self.pulled.append(device_path)
+    def _remote_content(self, device_path):
         package = Path(device_path).parent.name.removesuffix("-1")
-        Path(local_path).write_text(f"{package}:{self.installed[package][0]}")
+        return f"{package}:{self.installed[package][0]}"
+
+    def pull(self, device_path, local_path, progress_callback=None, **kwargs):
+        self.pulled.append(device_path)
+        content = self._remote_content(device_path)
+        Path(local_path).write_text(content)
+        if progress_callback:
+            _report_chunks(progress_callback, device_path, len(content))
 
     def _apply(self, remotes):
         for remote in remotes:
@@ -60,6 +68,8 @@ class FakeConnection:
             )
         if command.startswith("pm list packages"):
             return "".join(f"package:{p}\n" for p in self.installed)
+        if command.startswith("stat -c %s "):
+            return "".join(f"{len(self._remote_content(p))}\n" for p in args[3:])
         if command.startswith("pm path "):
             package = args[-1]
             if package not in self.installed:
@@ -86,6 +96,13 @@ class FakeConnection:
 
     def close(self):
         self.closed = True
+
+
+def _report_chunks(callback, path, size):
+    """Report a transfer in two chunks, the way adb-shell reports each chunk sent."""
+    first = size // 2
+    callback(path, first, size)
+    callback(path, size - first, size)
 
 
 def make_apk(path, package, version_code):
