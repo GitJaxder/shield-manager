@@ -27,7 +27,7 @@ from shield_manager.registry import (
     Registry,
     default_config_dir,
 )
-from shield_manager.sources import Downloader, page_site
+from shield_manager.sources import Downloader, GitHubSource, page_site
 from shield_manager.web.jobs import (
     COPYING,
     DONE,
@@ -97,6 +97,10 @@ def _tried(e: fleet.NoCompatibleCopy, shield: str) -> str:
     download page, the Play Store) as buttons, so they're left out."""
     lines = "".join(f"\n{i}. {src}: {outcome}" for i, (src, outcome) in enumerate(e.steps, 1))
     return f"No copy {shield} can run. What each source had:{lines}"
+
+
+def _source_dict(source: GitHubSource) -> dict:
+    return {"repo": source.repo, "asset": source.asset, "builtin": source.builtin}
 
 
 def _call_with_progress(fn: Callable, steps: list[Step], *args, **kwargs):
@@ -661,6 +665,10 @@ class Api:
                 for u in self._online.values()
             },
             "errors": self._online_errors,
+            "sources": {
+                pkg: _source_dict(src)
+                for pkg, src in (self.downloads.github_sources() if self.downloads else {}).items()
+            },
         }
 
     def check_online_updates(self) -> dict:
@@ -680,6 +688,31 @@ class Api:
 
         self._online_job = self.jobs.start("Check for updates online", work)
         return self._online_job.to_dict()
+
+    def set_github_source(self, package: str, body: dict) -> dict:
+        """Download an app's releases from a GitHub repository (owner/name or its URL),
+        optionally only files whose names match a pattern, like `app source set`. Saved for
+        next time; starts a new update check so the app's card shows what the repo has."""
+        downloads = self._downloads_on()
+        package = self._packages({"package": package})[0]
+        asset = str(body.get("asset") or "").strip() or None
+        try:
+            source = downloads.set_github_source(package, str(body.get("repo") or ""), asset)
+        except ValueError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e)) from e
+        return {"package": package, "source": _source_dict(source), "check": self._recheck(package)}
+
+    def remove_github_source(self, package: str) -> dict:
+        """Stop downloading an app from GitHub, built-in sources included."""
+        downloads = self._downloads_on()
+        package = self._packages({"package": package})[0]
+        if not downloads.remove_github_source(package):
+            raise ApiError(HTTPStatus.NOT_FOUND, "that app has no GitHub source")
+        return {"package": package, "source": None, "check": self._recheck(package)}
+
+    def _recheck(self, package: str) -> dict:
+        self._online.pop(package, None)  # found with the old source
+        return self.check_online_updates()
 
     def install_online_updates(self, body: dict) -> dict:
         """Install the newer online version of apps on every Shield that has them."""
