@@ -86,3 +86,42 @@ def test_pull_app_copies_base_and_splits(tmp_path):
 def test_pull_app_missing_package(tmp_path):
     with pytest.raises(deploy.DeployError, match="not installed"):
         deploy.pull_app(FakeConnection(), PKG, tmp_path)
+
+
+def _phases(events):
+    return [(e.phase.value, e.percent) for e in events]
+
+
+def test_install_reports_progress(tmp_path):
+    events = []
+    apk = make_apk(tmp_path / "app.apk", PKG, 42)
+    deploy.install(FakeConnection(), apk, PKG, 42, progress=events.append)
+    assert _phases(events) == [
+        ("copying", 0),
+        ("copying", 47),  # the fake sends the 17-byte file in two chunks
+        ("copying", 100),
+        ("installing", None),
+        ("done", None),
+    ]
+    assert events[1].describe() == f"Copying {PKG} - 47%"
+    assert events[3].describe() == f"Installing {PKG}"
+
+
+def test_pull_reports_download_progress_across_splits(tmp_path):
+    events = []
+    conn = FakeConnection(installed={PKG: (42, "")}, splits={PKG: ["split_config.en.apk"]})
+    deploy.pull_app(conn, PKG, tmp_path, progress=events.append)
+    assert [e.phase.value for e in events] == ["downloading"] * len(events)
+    assert events[0].percent == 0 and events[-1].percent == 100
+    assert events[-1].done == events[-1].total > 0
+
+
+def test_uninstall_reports_progress():
+    events = []
+    deploy.uninstall(FakeConnection(installed={PKG: (1, "")}), PKG, progress=events.append)
+    assert _phases(events) == [("removing", None), ("done", None)]
+
+
+def test_progress_describe_with_message():
+    event = deploy.Progress(PKG, deploy.Phase.FAILED, message="no space")
+    assert event.describe() == f"Failed {PKG}: no space"
