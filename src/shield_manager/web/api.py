@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 import shutil
 import tempfile
@@ -25,7 +26,17 @@ from shield_manager.registry import (
     Registry,
     default_config_dir,
 )
-from shield_manager.web.jobs import Job, Jobs
+from shield_manager.web.jobs import (
+    COPYING,
+    DONE,
+    DOWNLOADING,
+    FAILED,
+    INSTALLING,
+    QUEUED,
+    Job,
+    Jobs,
+    Step,
+)
 
 DEVICE_NAME = re.compile(r"^[\w.-]+$")
 PACKAGE_NAME = re.compile(r"^[A-Za-z0-9_.]+$")
@@ -51,6 +62,39 @@ def _default_connect(device: Device):
 
 def _err(e: Exception) -> str:
     return str(e) or type(e).__name__
+
+
+def _step_reporter(steps: list[Step]) -> Callable[[Any], None]:
+    """A deploy progress callback that moves steps through their stages.
+
+    It receives deploy.Progress events (phase, percent); DONE and FAILED are left to the
+    caller, which knows how the whole call ended.
+    """
+
+    def report(event: Any) -> None:
+        phase = getattr(event.phase, "value", event.phase)
+        if phase in (DOWNLOADING, COPYING, INSTALLING):
+            for step in steps:
+                step.update(phase, event.percent)
+
+    return report
+
+
+def _call_with_progress(fn: Callable, steps: list[Step], *args, **kwargs):
+    """Call a deploy function, passing progress= when it accepts one.
+
+    Without it, steps still move through their stages, just without percentages.
+    """
+    try:
+        accepts = "progress" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        accepts = False
+    if accepts:
+        kwargs["progress"] = _step_reporter(steps)
+    elif fn is deploy.install:
+        for step in steps:
+            step.update(INSTALLING)  # no byte counts to show; go straight to installing
+    return fn(*args, **kwargs)
 
 
 class Api:
@@ -285,6 +329,49 @@ class Api:
         meta = self.meta.load().get(package)
         return meta.label if meta and meta.label else package
 
+    def _copy_apps(self, job: Job, plan: list[tuple[str, str, int, list[Device]]]) -> None:
+        """Copy each (package, source Shield, versionCode, targets) in plan, step by step.
+
+        Every app/Shield pair gets a progress step up front, so the page shows the whole queue.
+        """
+        steps = {
+            (package, device.name): job.add_step(package, self._label(package), device.name)
+            for package, _, _, devices in plan
+            for device in devices
+        }
+        for package, source, version, devices in plan:
+            mine = [steps[(package, d.name)] for d in devices]
+            label = self._label(package)
+            try:
+                with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
+                    job.progress = f"Downloading {label} from {source}"
+                    for step in mine:
+                        step.update(DOWNLOADING)
+                    with self._connected(self.registry.get(source)) as conn:
+                        apks = _call_with_progress(deploy.pull_app, mine, conn, package, Path(tmp))
+                    for step in mine:
+                        step.update(QUEUED)
+                    for device, step in zip(devices, mine, strict=True):
+                        job.progress = f"Installing {label} on {device.name}"
+                        step.update(COPYING)
+                        result = self._on_device(
+                            device,
+                            lambda c, a=apks, p=package, v=version, st=step: asdict(
+                                _call_with_progress(deploy.install, [st], c, a, p, v)
+                            ),
+                        )
+                        if result["ok"]:
+                            step.update(DONE)
+                        else:
+                            step.update(FAILED, error=result["error"])
+                        job.results.append({"package": package, **result})
+            except Exception as e:
+                for step in mine:
+                    if step.stage not in (DONE, FAILED):
+                        step.update(FAILED, error=_err(e))
+                job.results.append({"package": package, "ok": False, "error": _err(e)})
+        job.progress = ""
+
     def install_from_shield(self, body: dict) -> dict:
         """Copy apps from the Shield that has the newest version (preferring the reference).
 
@@ -303,8 +390,8 @@ class Api:
                 for r in self._on_devices(self.registry.list(), deploy.package_versions)
                 if r["ok"]
             }
+            plan = []
             for package in packages:
-                label = self._label(package)
                 holders = {d: inv[package] for d, inv in inventories.items() if package in inv}
                 if not holders:
                     job.results.append(
@@ -313,27 +400,11 @@ class Api:
                     continue
                 newest = max(holders.values())
                 todo = [d for d in targets if holders.get(d.name) != newest]
-                if not todo:
-                    continue
                 candidates = [d for d, c in holders.items() if c == newest]
                 source = reference if reference in candidates else sorted(candidates)[0]
-                try:
-                    with tempfile.TemporaryDirectory(prefix="shield-manager-") as tmp:
-                        job.progress = f"Copying {label} from {source}"
-                        with self._connected(self.registry.get(source)) as conn:
-                            apks = deploy.pull_app(conn, package, Path(tmp))
-                        for device in todo:
-                            job.progress = f"Installing {label} on {device.name}"
-                            result = self._on_device(
-                                device,
-                                lambda c, a=apks, p=package, v=newest: asdict(
-                                    deploy.install(c, a, p, v)
-                                ),
-                            )
-                            job.results.append({"package": package, **result})
-                except Exception as e:
-                    job.results.append({"package": package, "ok": False, "error": _err(e)})
-            job.progress = ""
+                if todo:
+                    plan.append((package, source, newest, todo))
+            self._copy_apps(job, plan)
 
         what = self._label(packages[0]) if len(packages) == 1 else f"{len(packages)} apps"
         where = ", ".join(d.name for d in targets) if names else "every Shield"
@@ -352,22 +423,30 @@ class Api:
 
         def work(job: Job) -> None:
             try:
-                for device in targets:
+                label = self._label(info.package)
+                steps = [job.add_step(info.package, label, d.name) for d in targets]
+                for device, step in zip(targets, steps, strict=True):
                     job.progress = f"Installing on {device.name}"
-                    job.results.append(
-                        self._on_device(
-                            device,
-                            lambda c: asdict(
-                                deploy.install(
-                                    c,
-                                    apk_path,
-                                    info.package,
-                                    info.version_code,
-                                    allow_downgrade=allow_downgrade,
-                                )
-                            ),
-                        )
+                    step.update(COPYING)
+                    result = self._on_device(
+                        device,
+                        lambda c, st=step: asdict(
+                            _call_with_progress(
+                                deploy.install,
+                                [st],
+                                c,
+                                apk_path,
+                                info.package,
+                                info.version_code,
+                                allow_downgrade=allow_downgrade,
+                            )
+                        ),
                     )
+                    if result["ok"]:
+                        step.update(DONE)
+                    else:
+                        step.update(FAILED, error=result["error"])
+                    job.results.append(result)
                 job.progress = ""
             finally:
                 shutil.rmtree(apk_path.parent, ignore_errors=True)
@@ -385,17 +464,27 @@ class Api:
         targets = self._resolve(names) if names else self.registry.list()
 
         def work(job: Job) -> None:
-            job.progress = f"Copying apps from {reference.name}"
-            for report in fleet.sync(reference, targets, self.connect):
-                result: dict[str, Any] = {"device": report.device.name}
+            job.progress = f"Checking {reference.name}"
+            reports = fleet.status(reference, targets, self.connect)
+            wanted = {fleet.Change.INSTALL, fleet.Change.UPDATE}
+            by_package: dict[str, tuple[int, list[Device]]] = {}
+            for report in reports:
                 if report.error:
-                    result.update(ok=False, error=report.error)
-                else:
-                    result.update(
-                        ok=not report.failed, applied=report.applied, failed=report.failed
+                    job.results.append(
+                        {"device": report.device.name, "ok": False, "error": report.error}
                     )
-                job.results.append(result)
-            job.progress = ""
+                    continue
+                for d in report.drift:
+                    if d.change in wanted:
+                        version, devices = by_package.setdefault(
+                            d.package, (d.reference_version, [])
+                        )
+                        devices.append(report.device)
+            plan = [
+                (package, reference.name, version, devices)
+                for package, (version, devices) in sorted(by_package.items())
+            ]
+            self._copy_apps(job, plan)
 
         return self.jobs.start(f"Sync from {reference.name}", work).to_dict()
 

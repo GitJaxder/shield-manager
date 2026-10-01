@@ -118,6 +118,24 @@
   .job .grow { flex: 1; min-width: 0; }
   .job small { opacity: .75; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .job button { background: none; border: none; color: inherit; cursor: pointer; font-size: 18px; }
+  #tray { max-height: 70vh; overflow-y: auto; }
+  .job.has-steps { flex-direction: column; align-items: stretch; gap: 8px; }
+  .job-head { display: flex; gap: 10px; align-items: center; }
+  .steps { display: grid; gap: 10px; }
+  .step-head { display: flex; gap: 8px; font-size: 14px; }
+  .step-head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .step-head .pct { font-variant-numeric: tabular-nums; opacity: .85; }
+  .step small { margin-top: 2px; }
+  .pbar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--bg) 25%, transparent);
+    overflow: hidden; margin-top: 4px; position: relative; }
+  /* No width transition: the tray is redrawn on every poll, so it would restart from 0. */
+  .pbar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+  .pbar.ind i { width: 35% !important; position: absolute; animation: slide 1.2s ease-in-out infinite; }
+  .pbar.done i { width: 100% !important; }
+  .pbar.fail i { width: 100% !important; background: var(--danger); }
+  @keyframes slide { from { left: -35%; } to { left: 100%; } }
+  @media (prefers-reduced-motion: reduce) { .pbar.ind i { animation: none; left: 0; } }
+  .live { color: var(--accent); font-weight: 600; }
   .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid currentColor;
     border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -276,30 +294,91 @@ function summarize(job) {
   return done.length ? `Done on ${done.map((r) => r.device).join(", ")}` : "Already up to date";
 }
 
+const STAGE_ORDER = {downloading: 0, copying: 0, installing: 0, queued: 1, failed: 2, done: 3, skipped: 3};
+const ACTIVE = new Set(["downloading", "copying", "installing"]);
+
+function stageText(st) {
+  const pct = st.percent == null ? "" : ` – ${Math.round(st.percent)}%`;
+  switch (st.stage) {
+    case "queued": return "Waiting";
+    case "downloading": return `Downloading ${st.label}${pct}`;
+    case "copying": return `Copying to ${st.device}${pct}`;
+    case "installing": return `Installing ${st.label}`;
+    case "done": return "Installed";
+    case "skipped": return "Already up to date";
+    case "failed": return `Failed: ${st.error || "unknown error"}`;
+  }
+  return st.stage;
+}
+
+function stepRow(st) {
+  const active = ACTIVE.has(st.stage);
+  let bar = "";
+  if (st.stage === "done") bar = "done";
+  else if (st.stage === "failed") bar = "fail";
+  else if (active && st.percent == null) bar = "ind";
+  const width = st.stage === "queued" ? 0 : (st.percent ?? 0);
+  return `<div class="step">
+    <div class="step-head"><span class="grow">${esc(st.label)} → ${esc(st.device)}</span>
+      ${active && st.percent != null ? `<span class="pct">${Math.round(st.percent)}%</span>` : ""}</div>
+    <div class="pbar ${bar}"><i style="width:${width}%${bar === "ind" ? `;animation-delay:-${(Date.now() % 1200) / 1000}s` : ""}"></i></div>
+    <small>${esc(stageText(st))}</small></div>`;
+}
+
+// Live install stages per app, so cards can say "Installing on den" while a job runs.
+const live = new Map();  // job id -> steps
+
 function track(job) {
   const el = document.createElement("div");
   el.className = "job";
   $("#tray").append(el);
+  let expanded = false;
   const draw = (j) => {
     const running = j.state === "running";
-    el.innerHTML = `${running ? '<div class="spinner"></div>' : ""}
-      <div class="grow"><strong>${esc(j.title)}</strong>
-      <small>${esc(running ? (j.progress || "Working…") : summarize(j))}</small></div>
-      ${running ? "" : '<button aria-label="Dismiss">×</button>'}`;
-    const x = el.querySelector("button");
-    if (x) x.onclick = () => el.remove();
+    const steps = j.steps || [];
+    if (running) live.set(j.id, steps); else live.delete(j.id);
+    el.classList.toggle("has-steps", steps.length > 0);
+    const done = steps.filter((x) => x.stage === "done" || x.stage === "skipped").length;
+    const sub = running
+      ? (steps.length ? `${done} of ${steps.length} done` : (j.progress || "Working…"))
+      : summarize(j);
+    const sorted = [...steps].sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage]);
+    // While running, show the busiest few; once finished, only what failed.
+    const pool = running ? sorted : sorted.filter((x) => x.stage === "failed");
+    const shown = expanded ? pool : pool.slice(0, 3);
+    const hidden = pool.length - shown.length;
+    el.innerHTML = `<div class="job-head">${running ? '<div class="spinner"></div>' : ""}
+      <div class="grow"><strong>${esc(j.title)}</strong><small>${esc(sub)}</small></div>
+      ${running ? "" : '<button aria-label="Dismiss" data-x>×</button>'}</div>
+      ${shown.length ? `<div class="steps">${shown.map(stepRow).join("")}</div>` : ""}
+      ${hidden > 0 ? `<button class="more" data-more style="font-size:13px;text-align:left;padding:0;opacity:.8">Show ${hidden} more</button>` : ""}
+      ${expanded && pool.length > 3 ? `<button data-less style="font-size:13px;text-align:left;padding:0;opacity:.8">Show less</button>` : ""}`;
+    el.onclick = (ev) => {
+      if (ev.target.closest("[data-x]")) el.remove();
+      else if (ev.target.closest("[data-more]")) { expanded = true; draw(j); }
+      else if (ev.target.closest("[data-less]")) { expanded = false; draw(j); }
+    };
+    if (state.catalog) renderApps();
   };
   draw(job);
   const poll = async () => {
     try {
       const j = await api("GET", "jobs/" + job.id);
       draw(j);
-      if (j.state === "running") return setTimeout(poll, 1500);
+      if (j.state === "running") return setTimeout(poll, 700);
       loadCatalog();
       if (!j.results.some((r) => !r.ok) && !j.error) setTimeout(() => el.remove(), 8000);
-    } catch (e) { setTimeout(poll, 4000); }
+    } catch (e) { setTimeout(poll, 3000); }
   };
-  setTimeout(poll, 1000);
+  setTimeout(poll, 500);
+}
+
+function liveStep(pkg) {
+  for (const steps of live.values()) {
+    const st = steps.find((x) => x.package === pkg && ACTIVE.has(x.stage));
+    if (st) return st;
+  }
+  return null;
 }
 
 // ---- app store --------------------------------------------------------------------
@@ -325,6 +404,8 @@ function tile(app, cls = "icon") {
 }
 
 function statusLine(app) {
+  const st = liveStep(app.package);
+  if (st) return `<span class="live">${esc(stageText(st))}${st.stage === "installing" ? ` on ${esc(st.device)}` : ""}</span>`;
   const {missing, older} = appState(app);
   if (missing.length) return `<span class="warn">Not on ${esc(missing.join(", "))}</span>`;
   if (older.length) return `<span class="warn">Update on ${esc(older.join(", "))}</span>`;
