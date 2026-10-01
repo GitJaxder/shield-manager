@@ -127,6 +127,22 @@ def test_progress_describe_with_message():
     assert event.describe() == f"Failed {PKG}: no space"
 
 
+def test_progress_describe_names_the_shields():
+    def text(phase, **kw):
+        return deploy.Progress(PKG, phase, **kw).describe()
+
+    dl = deploy.Phase.DOWNLOADING
+    assert text(dl, done=40, total=100, source="lounge", device="den") == (
+        f"Downloading {PKG} from lounge - 40%"
+    )
+    assert text(dl, device="lounge") == f"Downloading {PKG} from lounge"
+    assert (
+        text(deploy.Phase.COPYING, done=1, total=2, device="den") == f"Copying {PKG} to den - 50%"
+    )
+    assert text(deploy.Phase.INSTALLING, device="den") == f"Installing {PKG} on den"
+    assert text(deploy.Phase.REMOVING, device="den") == f"Removing {PKG} from den"
+
+
 class SlowShield(FakeConnection):
     """A Shield whose package manager and file transfers go quiet for longer than the
     connection's default 9-second socket timeout, as a real install often does."""

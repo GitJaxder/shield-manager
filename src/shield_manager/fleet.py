@@ -81,6 +81,12 @@ def _for_device(progress: ProgressCallback | None, name: str) -> ProgressCallbac
     return lambda event: progress(replace(event, device=name))
 
 
+def _from_source(progress: ProgressCallback | None, name: str) -> ProgressCallback | None:
+    if progress is None:
+        return None
+    return lambda event: progress(replace(event, source=name))
+
+
 @contextmanager
 def _connected(connect: Connector, device: Device) -> Iterator[Connection]:
     conn = connect(device)
@@ -142,7 +148,10 @@ def sync(
             if package not in pulled:
                 with _connected(connect, reference) as ref_conn:
                     pulled[package] = deploy.pull_app(
-                        ref_conn, package, Path(tmp) / package, progress=on_progress
+                        ref_conn,
+                        package,
+                        Path(tmp) / package,
+                        progress=_from_source(on_progress, reference.name),
                     )
             return pulled[package]
 

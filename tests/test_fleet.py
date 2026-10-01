@@ -112,6 +112,9 @@ def test_sync_reports_progress_per_device(connect, shields):
     assert plex[0] == "downloading"
     assert plex.index("copying") > plex.index("downloading")
     assert plex[-2:] == ["installing", "done"]
+    downloads = [e for e in events if e.phase.value == "downloading"]
+    assert {e.source for e in downloads} == {REF.name}
+    assert downloads[0].describe().startswith(f"Downloading {downloads[0].package} from {REF.name}")
 
 
 def test_sync_reports_failures_as_progress(connect, shields):

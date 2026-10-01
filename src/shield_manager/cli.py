@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from shield_manager import __version__
 from shield_manager.apk import ApkError, read_apk_info
@@ -158,7 +159,7 @@ def _device_info(device: Device) -> int:
 
 
 class _ProgressLine:
-    """Shows deploy progress on stderr, e.g. "den: Copying org.xbmc.kodi - 40%".
+    """Shows deploy progress on stderr, e.g. "Copying org.xbmc.kodi to den - 40%".
 
     On a terminal it's one line rewritten in place; otherwise (logs, pipes) each phase
     is printed once, without the percentage steps.
@@ -175,7 +176,7 @@ class _ProgressLine:
         from shield_manager.deploy import Phase
 
         who = event.device or self.device
-        text = f"{who}: {event.describe()}" if who else event.describe()
+        text = replace(event, device=who or None).describe()
         if self.live:
             self.stream.write("\r" + text.ljust(self.width))
             self.stream.flush()
