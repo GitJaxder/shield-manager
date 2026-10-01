@@ -274,6 +274,88 @@ the built-in ones too. Sources are saved in `~/.config/shield-manager/app-source
 Downloads are still only installed when they're signed by the same developer as the copy on
 your Shields.
 
+## Home Assistant
+
+On Home Assistant OS, Shield Manager runs as a Home Assistant app (formerly add-on). Its
+app-store screen then appears in the sidebar, including in the Home Assistant app on your
+phone, and nothing has to run on a computer. An optional integration adds sensors, buttons
+and actions for dashboards and automations.
+
+### Install the app
+
+1. In Home Assistant, open
+   [this link](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FGitJaxder%2Fshield-manager)
+   and select **Open link**, then **Add**. Or do it by hand: go to **Settings → Apps**
+   (**Add-ons** on older versions), open the app store, select **⋮ → Repositories**,
+   paste `https://github.com/GitJaxder/shield-manager` and select **Add**.
+2. Reload the app store page (**⋮ → Check for updates**), find **Shield Manager** and
+   select it.
+3. Select **Install**. Home Assistant builds the app, which takes a few minutes.
+4. Turn on **Show in sidebar**, then select **Start**.
+5. Open **Shield Manager** in the sidebar and add your Shields on the **Shields** tab. The
+   app's **Documentation** tab walks through this.
+
+If you already use Home Assistant's Android TV integration, the app reuses its ADB key, so
+your Shields won't ask to allow debugging again. Your Shields and settings are kept in the
+app's storage and included in Home Assistant backups. Settings from `shield-manager` on a
+computer aren't copied over; add the Shields again in the app.
+
+**Updating:** when a new version is out, Home Assistant offers it under **Settings →
+Updates**.
+
+### Install the integration (optional)
+
+The integration needs [HACS](https://hacs.xyz/docs/use/download/download/).
+
+1. Open
+   [this link](https://my.home-assistant.io/redirect/hacs_repository/?owner=GitJaxder&repository=shield-manager&category=integration)
+   and select **Open link**. Or do it by hand: in HACS, select **⋮ → Custom repositories**,
+   paste `https://github.com/GitJaxder/shield-manager`, choose the type **Integration**
+   and select **Add**, then search HACS for **Shield Manager**.
+2. Select **Download**, then **Download** again.
+3. Restart Home Assistant: **Settings → System → ⋮ (top right) → Restart Home Assistant**.
+4. Go to **Settings → Devices & services**. Under **Discovered**, Shield Manager appears
+   because the app announced itself. Select **Add**, then **Submit**.
+
+   If it isn't there, make sure the app is running and restart Home Assistant once more.
+
+Without HACS, copy the `custom_components/shield_manager` folder from this repository into
+the `custom_components` folder in your Home Assistant configuration folder (for example
+with the Samba share or Studio Code Server app), then follow steps 3 and 4.
+
+You get a device for each Shield with:
+
+- **Apps installed** and **Apps behind reference** (its attributes list which apps are
+  missing, outdated, newer than the reference, or not on the reference).
+- **Reachable**, which is off when the app can't connect to that Shield.
+- **Sync from reference**, a button that installs what that Shield is behind on.
+
+And on the **Shield Manager** device: **Reference Shield** (pick which Shield the others
+copy), **Activity** (what it's doing right now, such as `Installing Kodi on bedroom - 40%`),
+**App updates available**, and the buttons **Sync all Shields**, **Check for app updates**
+and **Install app updates**.
+
+For automations there are two actions, `shield_manager.sync` and `shield_manager.install`.
+For example, to sync every Shield each night:
+
+```yaml
+automation:
+  - alias: Sync Shields nightly
+    triggers:
+      - trigger: time
+        at: "03:00:00"
+    actions:
+      - action: shield_manager.sync
+```
+
+`shield_manager.install` copies apps by package name, for example
+`packages: org.xbmc.kodi` with `devices: bedroom`. Neither ever removes apps.
+
+The integration also works with `shield-manager web` running on a computer: add it under
+**Settings → Devices & services → Add integration → Shield Manager** and enter the web UI's
+address. Start the web UI with `--host 0.0.0.0 --allow-from` and Home Assistant's IP
+address, so that only Home Assistant can reach it.
+
 ## Development
 
 Follow the install steps, but in step 4 run `pip install -e ".[dev]"` instead, so code changes
@@ -282,6 +364,13 @@ take effect without reinstalling and the test tools are installed. Then:
 ```sh
 ruff check . && ruff format --check .
 pytest
+```
+
+The Home Assistant integration's tests need Python 3.13 and Home Assistant's test tools:
+
+```sh
+pip install -e . pytest-homeassistant-custom-component
+pytest tests_ha -o asyncio_mode=auto
 ```
 
 ## License
