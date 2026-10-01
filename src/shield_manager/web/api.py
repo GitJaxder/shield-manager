@@ -27,7 +27,7 @@ from shield_manager.registry import (
     Registry,
     default_config_dir,
 )
-from shield_manager.sources import Downloader
+from shield_manager.sources import Downloader, page_site
 from shield_manager.web.jobs import (
     COPYING,
     DONE,
@@ -90,6 +90,13 @@ def _download_page(fetcher: fleet.Fetcher, target_abis: list[str]) -> str | None
     except Exception:
         return None
     return url if url and url.startswith("https://") else None
+
+
+def _tried(e: fleet.NoCompatibleCopy, shield: str) -> str:
+    """What each source had for a Shield, numbered. The page offers the next steps (a
+    download page, the Play Store) as buttons, so they're left out."""
+    lines = "".join(f"\n{i}. {src}: {outcome}" for i, (src, outcome) in enumerate(e.steps, 1))
+    return f"No copy {shield} can run. What each source had:{lines}"
 
 
 def _call_with_progress(fn: Callable, steps: list[Step], *args, **kwargs):
@@ -409,20 +416,26 @@ class Api:
                         job.progress = f"Installing {label} on {device.name}"
                         fetch = partial(self._fetch, job, fetcher, step, abis.get(device.name, []))
                         order = ordered(package, sources, device)
-                        result = self._on_device(
-                            device,
-                            lambda c, p=package, v=version, o=order, f=fetch, st=step: asdict(
-                                fleet.install_first_compatible(
-                                    c,
-                                    p,
-                                    v,
-                                    o,
-                                    f,
-                                    progress=_step_reporter([st]),
-                                    allow_downgrade=allow_downgrade,
-                                )[0]
-                            ),
-                        )
+                        no_copy: list[fleet.NoCompatibleCopy] = []
+
+                        def install(c, p=package, v=version, o=order, f=fetch, st=step, nc=no_copy):
+                            try:
+                                return asdict(
+                                    fleet.install_first_compatible(
+                                        c,
+                                        p,
+                                        v,
+                                        o,
+                                        f,
+                                        progress=_step_reporter([st]),
+                                        allow_downgrade=allow_downgrade,
+                                    )[0]
+                                )
+                            except fleet.NoCompatibleCopy as e:
+                                nc.append(e)  # kept for its steps; the page adds the rest
+                                raise
+
+                        result = self._on_device(device, install)
                         if result["ok"]:
                             step.update(DONE)
                         else:
@@ -433,6 +446,10 @@ class Api:
                                 step.download_page = _download_page(
                                     fetcher, abis.get(device.name, [])
                                 )
+                                if step.download_page:
+                                    step.download_site = page_site(step.download_page)
+                            if no_copy:
+                                step.error = _tried(no_copy[0], device.name)
                         job.results.append({"package": package, **result})
             except Exception as e:
                 for step in mine:
@@ -739,7 +756,13 @@ class Api:
         url = downloads.download_page(package, version_name, abi)
         if not url.startswith("https://"):
             raise ApiError(HTTPStatus.BAD_GATEWAY, "no download page found")
-        return {"package": package, "device": target.name, "version": version_name, "url": url}
+        return {
+            "package": package,
+            "device": target.name,
+            "version": version_name,
+            "url": url,
+            "site": page_site(url),
+        }
 
     def device_apps(self, name: str, include_system: bool) -> dict:
         """Every app on one Shield, like `app list`, optionally with system apps."""

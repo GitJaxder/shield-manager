@@ -461,7 +461,11 @@ def test_copy_reports_an_app_no_shield_has_a_compatible_copy_of(mixed_ui):
     )
     [step] = job["steps"]
     assert step["stage"] == "failed"
-    assert "no copy this Shield can run" in step["error"]
+    assert step["error"].startswith("No copy living can run.")
+    assert (
+        "1. Your Shields" in step["error"]
+        and "2. GitHub: downloads are turned off" in step["error"]
+    )
     assert step["store"]  # the page offers the Play Store button
     assert "com.plexapp.android" not in installed["living"]
 
@@ -481,6 +485,7 @@ def test_an_app_no_copy_fits_gets_a_download_page(mixed_ui, monkeypatch):
     body = {"packages": ["com.plexapp.android"], "devices": ["living"]}
     [step] = _run(api, api.install_from_shield(body))["steps"]
     assert step["download_page"] == "https://www.apkmirror.com/apk/plex/plex-5"
+    assert step["download_site"] == "APKMirror"
     assert asked == [("com.plexapp.android", ["armeabi-v7a", "armeabi"])]
 
     # Anything but an https link is dropped, since the page shows it as a button.
@@ -636,4 +641,5 @@ def test_download_page_for_an_app_on_a_shield(ui):
     ui.api.downloads = Downloads()
     status, body = ui("GET", "/api/download-page?package=org.xbmc.kodi&device=living")
     assert status == 200 and body["url"] == "https://www.apkmirror.com/apk/kodi"
+    assert body["site"] == "APKMirror"
     assert asked == [("org.xbmc.kodi", "20.0", asked[0][2])]  # den has the newest, 20.0
