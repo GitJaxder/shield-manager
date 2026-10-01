@@ -162,3 +162,35 @@ def test_fleet_unreachable_reference(registry, fleet, capsys):
     registry.add(Device("attic", "10.0.0.9"))
     assert main(["fleet", "status", "--from", "attic"], registry=registry) == 1
     assert "can't read apps from reference attic: unreachable" in capsys.readouterr().err
+
+
+def test_install_shows_progress_phases_when_not_a_terminal(registry, fleet, tmp_path, capsys):
+    apk = tmp_path / "app.apk"
+    with zipfile.ZipFile(apk, "w") as zf:
+        zf.writestr("AndroidManifest.xml", build_manifest(ATTRS, STRINGS))
+    fleet["den"].responses["pm install"] = "Success"
+    fleet["den"].installed["com.example.tv"] = (42, "1.4.2")
+    assert main(["app", "install", str(apk), "-d", "den"], registry=registry) == 0
+    err = capsys.readouterr().err.splitlines()
+    assert err == ["den: Copying com.example.tv - 0%", "den: Installing com.example.tv"]
+
+
+def test_progress_line_rewrites_in_place_on_a_terminal():
+    import io
+
+    from shield_manager.cli import _ProgressLine
+    from shield_manager.deploy import Phase, Progress
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    stream = Tty()
+    line = _ProgressLine(stream)
+    line(Progress("org.xbmc.kodi", Phase.DOWNLOADING, 40, 100, device="den"))
+    line(Progress("org.xbmc.kodi", Phase.INSTALLING, device="den"))
+    line.clear()
+    out = stream.getvalue()
+    assert out.startswith("\rden: Downloading org.xbmc.kodi - 40%")
+    assert "\rden: Installing org.xbmc.kodi" in out
+    assert out.endswith("\r")

@@ -157,7 +157,48 @@ def _device_info(device: Device) -> int:
     return 0
 
 
-def _for_each_device(devices: list[Device], action: Callable[[object], str]) -> int:
+class _ProgressLine:
+    """Shows deploy progress on stderr, e.g. "den: Copying org.xbmc.kodi - 40%".
+
+    On a terminal it's one line rewritten in place; otherwise (logs, pipes) each phase
+    is printed once, without the percentage steps.
+    """
+
+    def __init__(self, stream=None) -> None:
+        self.stream = stream or sys.stderr
+        self.live = self.stream.isatty()
+        self.device = ""
+        self.width = 0
+        self.last = None
+
+    def __call__(self, event) -> None:
+        from shield_manager.deploy import Phase
+
+        who = event.device or self.device
+        text = f"{who}: {event.describe()}" if who else event.describe()
+        if self.live:
+            self.stream.write("\r" + text.ljust(self.width))
+            self.stream.flush()
+            self.width = len(text)
+            return
+        key = (who, event.package, event.phase)
+        if event.phase is not Phase.DONE and key != self.last:
+            print(text, file=self.stream)
+            self.last = key
+
+    def clear(self) -> None:
+        """Erase the live line so the next printed result starts on a clean line."""
+        if self.live and self.width:
+            self.stream.write("\r" + " " * self.width + "\r")
+            self.stream.flush()
+            self.width = 0
+
+
+def _for_each_device(
+    devices: list[Device],
+    action: Callable[[object], str],
+    progress: _ProgressLine | None = None,
+) -> int:
     """Run action against each device in turn, printing one result line per device.
 
     Returns 1 if any device failed, so one unreachable Shield doesn't hide the rest.
@@ -166,12 +207,17 @@ def _for_each_device(devices: list[Device], action: Callable[[object], str]) -> 
 
     failed = 0
     for device in devices:
+        if progress:
+            progress.device = device.name
         try:
             conn = adb.connect(device)
             try:
-                print(f"{device.name}: {action(conn)}")
+                result = action(conn)
             finally:
                 conn.close()
+                if progress:
+                    progress.clear()
+            print(f"{device.name}: {result}")
         except Exception as e:  # report per device and keep going
             failed += 1
             print(f"{device.name}: FAILED: {e}", file=sys.stderr)
@@ -182,6 +228,8 @@ def _for_each_device(devices: list[Device], action: Callable[[object], str]) -> 
 
 def _run_app(args: argparse.Namespace, registry: Registry) -> int:
     from shield_manager import deploy
+
+    progress = _ProgressLine()
 
     if not (args.device or args.group or args.all):
         print("error: pick targets with --device, --group or --all", file=sys.stderr)
@@ -202,13 +250,14 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
                 info.package,
                 info.version_code,
                 allow_downgrade=args.allow_downgrade,
+                progress=progress,
             )
             return f"installed {v.version_name} (versionCode {v.version_code})"
 
     elif args.action == "uninstall":
 
         def action(conn):
-            deploy.uninstall(conn, args.package)
+            deploy.uninstall(conn, args.package, progress=progress)
             return f"removed {args.package}"
 
     elif args.action == "version":
@@ -223,7 +272,7 @@ def _run_app(args: argparse.Namespace, registry: Registry) -> int:
             packages = deploy.list_packages(conn, include_system=args.system)
             return f"{len(packages)} packages\n" + "\n".join(f"  {p}" for p in packages)
 
-    return _for_each_device(devices, action)
+    return _for_each_device(devices, action, progress)
 
 
 _DRIFT_LABELS = {
@@ -260,6 +309,7 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
     picked = args.device or args.group or args.all
     targets = registry.resolve(args.device, args.group, args.all) if picked else registry.list()
 
+    progress = _ProgressLine()
     try:
         if args.action == "status":
             reports = fleet.status(reference, targets, adb.connect)
@@ -271,7 +321,9 @@ def _run_fleet(args: argparse.Namespace, registry: Registry) -> int:
                 prune=args.prune,
                 allow_downgrade=args.allow_downgrade,
                 dry_run=args.dry_run,
+                progress=progress,
             )
+            progress.clear()
     except Exception as e:  # target failures are caught per device; this is the reference
         print(f"error: can't read apps from reference {reference.name}: {e}", file=sys.stderr)
         return 1
